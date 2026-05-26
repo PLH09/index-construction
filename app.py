@@ -281,9 +281,7 @@ with st.sidebar:
     base_value = st.number_input(T["base"], value=100, step=10)
 
     st.markdown("")
-    cbtn1, cbtn2 = st.columns(2)
-    validate = cbtn1.button(T["validate"], use_container_width=True)
-    run = cbtn2.button(T["run"], use_container_width=True, type="primary")
+    run = st.button(T["run"], use_container_width=True, type="primary")
 
 
 # ---------------- Data ----------------
@@ -393,13 +391,6 @@ def _render_chips(valid_map: dict[str, str | None]):
     if invalid:
         st.caption(f"{T['invalid_tickers']}: {', '.join(invalid)}")
 
-
-# Run validation-only (don't proceed to fetch prices)
-if validate:
-    with st.spinner(T["validating"]):
-        valid_map = validate_tickers(tickers)
-    _render_chips(valid_map)
-    st.stop()
 
 if not run and "loaded" not in st.session_state:
     st.info(T["hint"])
