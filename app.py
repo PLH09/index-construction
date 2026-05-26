@@ -11,6 +11,8 @@ import streamlit as st
 import yfinance as yf
 from sklearn.decomposition import PCA
 
+from pdf_report import generate_pdf_report
+
 # ---------------- i18n ----------------
 TEXTS = {
     "zh": {
@@ -109,6 +111,9 @@ TEXTS = {
         "scenario_name": "名稱",
         "scenario_compare_chart": "情境疊圖",
         "scenario_compare_table": "情境指標比較",
+        "pdf_download": "📄 下載 PDF 報告（含文字解說）",
+        "pdf_generating": "產生 PDF 中…",
+        "pdf_note": "PDF 報告以英文撰寫（為兼容雲端字型）",
     },
     "en": {
         "page_title": "Index Construction",
@@ -206,6 +211,9 @@ TEXTS = {
         "scenario_name": "Name",
         "scenario_compare_chart": "Scenario overlay",
         "scenario_compare_table": "Scenario metrics",
+        "pdf_download": "📄 Download PDF report (with narrative)",
+        "pdf_generating": "Generating PDF…",
+        "pdf_note": "PDF report is rendered in English for portable font support.",
     },
 }
 
@@ -767,12 +775,14 @@ st.markdown(f"## {T['pca_title']}")
 st.markdown(f"<div class='caption'>{T['pca_caption']}</div>", unsafe_allow_html=True)
 
 returns = prices.pct_change().dropna()
+pca_explained_for_pdf: list[float] | None = None
 if returns.shape[1] < 2 or returns.shape[0] < 30:
     st.info(T["pca_need_more"])
 else:
     n_comp = min(3, returns.shape[1])
     pca = PCA(n_components=n_comp).fit(returns.values)
     explained = pca.explained_variance_ratio_ * 100  # %
+    pca_explained_for_pdf = list(explained)
     loadings = pd.DataFrame(
         pca.components_.T,
         index=returns.columns,
@@ -902,9 +912,38 @@ else:
 st.markdown("---")
 download_df = prices.copy()
 download_df["Index"] = index_series
-st.download_button(
+
+dl1, dl2 = st.columns(2)
+dl1.download_button(
     T["download"],
     download_df.to_csv().encode("utf-8"),
     file_name=f"index_construction_{start_date}_{end_date}.csv",
     mime="text/csv",
+    use_container_width=True,
 )
+
+with dl2:
+    with st.spinner(T["pdf_generating"]):
+        pdf_bytes = generate_pdf_report(
+            index_series=index_series,
+            benchmark=benchmark_series,
+            bench_label=bench_choice if benchmark_series is not None else "—",
+            base_value=base_value,
+            weights=weights,
+            share_info=share_info,
+            prices=prices,
+            sector_weights=sector_weights,
+            metrics=metrics,
+            weight_mode_label=weight_choice,
+            period=(start_date, end_date),
+            pca_explained=pca_explained_for_pdf,
+        )
+    st.download_button(
+        T["pdf_download"],
+        pdf_bytes,
+        file_name=f"index_construction_{start_date}_{end_date}.pdf",
+        mime="application/pdf",
+        use_container_width=True,
+    )
+
+st.caption(T["pdf_note"])
