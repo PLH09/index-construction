@@ -3,11 +3,13 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
+from sklearn.decomposition import PCA
 
 # ---------------- i18n ----------------
 TEXTS = {
@@ -64,6 +66,16 @@ TEXTS = {
         "m_float": "自由流通股數合計",
         "download": "下載 CSV",
         "base_label": "基準",
+        "pca_title": "因子分析 (PCA)",
+        "pca_caption": "用主成分分析找出驅動你指數的隱藏因子。PC1 通常代表「整體市場」，PC2、PC3 則是次要主題（如產業偏好）。",
+        "pca_variance": "各因子解釋變異量",
+        "pca_loadings": "成分股在因子上的權重 (Loadings)",
+        "pca_need_more": "PCA 需要至少 2 支股票與 30 天以上資料。",
+        "pca_factor": "因子",
+        "pca_explained": "解釋變異 %",
+        "pca_interpret_pc1": "PC1 解釋了 {p:.0f}% 的變異 — 通常代表整體市場走勢（系統性風險）",
+        "pca_interpret_pc2": "PC2 解釋了 {p:.0f}% — 通常代表產業 / 風格分歧",
+        "pca_interpret_pc3": "PC3 解釋了 {p:.0f}% — 個別公司特有風險",
     },
     "en": {
         "page_title": "Index Construction",
@@ -118,6 +130,16 @@ TEXTS = {
         "m_float": "Total free float",
         "download": "Download CSV",
         "base_label": "Base",
+        "pca_title": "Factor analysis (PCA)",
+        "pca_caption": "Principal Component Analysis uncovers the hidden factors driving your index. PC1 typically captures broad market movement; PC2/PC3 reveal secondary themes like sector tilts.",
+        "pca_variance": "Variance explained by each factor",
+        "pca_loadings": "Component loadings on each factor",
+        "pca_need_more": "PCA requires at least 2 tickers and 30+ days of data.",
+        "pca_factor": "Factor",
+        "pca_explained": "Explained %",
+        "pca_interpret_pc1": "PC1 explains {p:.0f}% of variance — typically the broad market move (systematic risk)",
+        "pca_interpret_pc2": "PC2 explains {p:.0f}% — typically a sector / style tilt",
+        "pca_interpret_pc3": "PC3 explains {p:.0f}% — idiosyncratic / company-specific risk",
     },
 }
 
@@ -432,6 +454,70 @@ m1, m2, m3 = st.columns(3)
 m1.metric(T["m_cap"], fmt_big(total_cap))
 m2.metric(T["m_total"], fmt_big(total_shares_sum))
 m3.metric(T["m_float"], fmt_big(total_float))
+
+# ---------------- Factor Analysis (PCA) ----------------
+st.markdown(f"## {T['pca_title']}")
+st.markdown(f"<div class='caption'>{T['pca_caption']}</div>", unsafe_allow_html=True)
+
+returns = prices.pct_change().dropna()
+if returns.shape[1] < 2 or returns.shape[0] < 30:
+    st.info(T["pca_need_more"])
+else:
+    n_comp = min(3, returns.shape[1])
+    pca = PCA(n_components=n_comp).fit(returns.values)
+    explained = pca.explained_variance_ratio_ * 100  # %
+    loadings = pd.DataFrame(
+        pca.components_.T,
+        index=returns.columns,
+        columns=[f"PC{i+1}" for i in range(n_comp)],
+    )
+
+    pca_left, pca_right = st.columns([1, 1.6])
+
+    with pca_left:
+        var_df = pd.DataFrame({
+            T["pca_factor"]: [f"PC{i+1}" for i in range(n_comp)],
+            T["pca_explained"]: explained.round(2),
+        })
+        fig_var = px.bar(
+            var_df, x=T["pca_factor"], y=T["pca_explained"],
+            text=T["pca_explained"], color_discrete_sequence=[ACCENT],
+        )
+        fig_var.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+        fig_var.update_yaxes(range=[0, max(explained) * 1.15])
+        st.plotly_chart(_minimal(fig_var, 320), use_container_width=True)
+
+    with pca_right:
+        # Heatmap of loadings — diverging palette around 0
+        fig_load = px.imshow(
+            loadings.values,
+            x=loadings.columns,
+            y=loadings.index,
+            color_continuous_scale=[[0, "#3D2B1F"], [0.5, BG], [1, ACCENT]],
+            zmin=-max(abs(loadings.values.min()), abs(loadings.values.max())),
+            zmax=max(abs(loadings.values.min()), abs(loadings.values.max())),
+            text_auto=".2f",
+            aspect="auto",
+        )
+        fig_load.update_layout(
+            height=320, margin=dict(l=0, r=0, t=10, b=0),
+            plot_bgcolor=BG, paper_bgcolor=BG,
+            font=dict(family="-apple-system, sans-serif", size=12, color=INK),
+            coloraxis_showscale=False,
+        )
+        st.markdown(f"**{T['pca_loadings']}**")
+        st.plotly_chart(fig_load, use_container_width=True)
+
+    # Plain-language interpretation
+    interp = []
+    if n_comp >= 1:
+        interp.append(T["pca_interpret_pc1"].format(p=explained[0]))
+    if n_comp >= 2:
+        interp.append(T["pca_interpret_pc2"].format(p=explained[1]))
+    if n_comp >= 3:
+        interp.append(T["pca_interpret_pc3"].format(p=explained[2]))
+    for line in interp:
+        st.markdown(f"• {line}")
 
 # Download
 st.markdown("---")
