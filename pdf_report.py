@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from reportlab.lib.colors import HexColor
-from reportlab.lib.enums import TA_LEFT
+from reportlab.lib.enums import TA_JUSTIFY, TA_LEFT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
@@ -25,7 +25,8 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (
-    Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
+    Image, KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer,
+    Table, TableStyle,
 )
 
 # Match the dashboard's terracotta theme
@@ -635,12 +636,29 @@ def generate_pdf_report(
         takeaway(_pca_takeaway(pca_explained, t))
 
     # ===== Methodology + disclaimer =====
+    # Justified alignment + matching indents so both paragraphs share a clean
+    # left and right edge — fixes the ragged / mis-aligned look in CJK mode.
+    meta_body_style = ParagraphStyle(
+        "MetaBody", parent=body_style,
+        alignment=TA_JUSTIFY,
+        fontSize=9.5, leading=14,
+        leftIndent=0, rightIndent=0,
+        spaceAfter=8,
+    )
+    meta_disclaimer_style = ParagraphStyle(
+        "MetaDisclaimer", parent=meta_body_style,
+        fontName=body_font,
+        fontSize=9, leading=13,
+        textColor=HexColor(MUTED),
+        spaceBefore=4, spaceAfter=0,
+    )
     story.append(Spacer(1, 16))
-    story.append(Paragraph(t["h_methodology"], h2_style))
-    story.append(Paragraph(t["methodology"], body_style))
-    # CJK font has no italic variant — skip the <i> tag to avoid placeholder boxes
-    disclaimer_html = t["disclaimer"] if cjk else f"<i>{t['disclaimer']}</i>"
-    story.append(Paragraph(disclaimer_html, caption_style))
+    methodology_block = [
+        Paragraph(t["h_methodology"], h2_style),
+        Paragraph(t["methodology"], meta_body_style),
+        Paragraph(t["disclaimer"], meta_disclaimer_style),
+    ]
+    story.append(KeepTogether(methodology_block))
 
     doc.build(story)
     return buf.getvalue()
