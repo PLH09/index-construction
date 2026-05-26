@@ -16,7 +16,11 @@ Pick any set of tickers, choose a weighting scheme, and instantly see index perf
 - **Bilingual UI** with one-click language toggle
 - **Warm minimalist design** — terracotta accent on cream background
 
-## Quick start
+## Live demo
+
+Deploy free on [Streamlit Community Cloud](https://share.streamlit.io/) — connect this repo, point to `app.py`, done.
+
+## Quick start (local)
 
 ```bash
 pip install -r requirements.txt
