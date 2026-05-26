@@ -19,8 +19,14 @@ TEXTS = {
         "subtitle": "自訂成分股組合，建構你的指數。資料：Yahoo Finance",
         "settings": "設定",
         "language": "語言",
+        "preset_basket": "預設組合",
+        "preset_custom": "自訂",
         "tickers": "股票代碼",
         "tickers_help": "用逗號分隔。例：AAPL, MSFT, 2330.TW",
+        "validate": "驗證代碼",
+        "validating": "驗證中…",
+        "valid_tickers": "有效代碼",
+        "invalid_tickers": "查無資料",
         "weight": "權重方式",
         "weight_equal": "等權重",
         "weight_cap": "市值加權",
@@ -83,8 +89,14 @@ TEXTS = {
         "subtitle": "Construct your custom equity index. Source: Yahoo Finance",
         "settings": "Settings",
         "language": "Language",
+        "preset_basket": "Preset basket",
+        "preset_custom": "Custom",
         "tickers": "Tickers",
         "tickers_help": "Comma-separated. e.g. AAPL, MSFT, 2330.TW",
+        "validate": "Validate tickers",
+        "validating": "Validating…",
+        "valid_tickers": "Valid",
+        "invalid_tickers": "Not found",
         "weight": "Weighting",
         "weight_equal": "Equal weight",
         "weight_cap": "Market cap",
@@ -207,15 +219,37 @@ with st.sidebar:
 L = "en" if lang == "English" else "zh"
 T = TEXTS[L]
 
+PRESET_BASKETS = {
+    "Magnificent 7": "AAPL, MSFT, GOOGL, AMZN, NVDA, META, TSLA",
+    "FAANG": "META, AAPL, AMZN, NFLX, GOOGL",
+    "Semiconductors": "NVDA, TSM, AVGO, AMD, INTC, QCOM, ASML, MU",
+    "Cloud / SaaS": "MSFT, CRM, NOW, SNOW, DDOG, NET, ORCL",
+    "EV & Battery": "TSLA, BYD, RIVN, LCID, NIO, F, GM",
+    "Taiwan Top Tech": "2330.TW, 2454.TW, 2317.TW, 2308.TW, 2382.TW, 2303.TW",
+    "Dow Jones (top 10)": "AAPL, MSFT, V, UNH, JPM, JNJ, WMT, PG, HD, MA",
+    "China Tech (ADR)": "BABA, PDD, JD, BIDU, NTES, TCEHY",
+}
+
 with st.sidebar:
     st.markdown(f"### {T['settings']}")
 
-    tickers_input = st.text_area(
-        T["tickers"],
-        value="AAPL, MSFT, GOOGL, AMZN, NVDA, META, TSLA",
-        help=T["tickers_help"],
-        height=80,
-    )
+    basket_options = [T["preset_custom"]] + list(PRESET_BASKETS.keys())
+    chosen_basket = st.selectbox(T["preset_basket"], basket_options, index=1)
+
+    # If user picks a preset, prefill text area; "Custom" keeps whatever's there
+    if chosen_basket != T["preset_custom"]:
+        default_tickers = PRESET_BASKETS[chosen_basket]
+        # use key tied to basket so changing the dropdown actually refreshes the field
+        tickers_input = st.text_area(
+            T["tickers"], value=default_tickers, help=T["tickers_help"],
+            height=80, key=f"tickers_{chosen_basket}",
+        )
+    else:
+        tickers_input = st.text_area(
+            T["tickers"],
+            value=st.session_state.get("tickers_custom", "AAPL, MSFT, NVDA"),
+            help=T["tickers_help"], height=80, key="tickers_custom",
+        )
 
     weight_label_map = {
         T["weight_equal"]: "equal",
@@ -247,7 +281,9 @@ with st.sidebar:
     base_value = st.number_input(T["base"], value=100, step=10)
 
     st.markdown("")
-    run = st.button(T["run"], use_container_width=True)
+    cbtn1, cbtn2 = st.columns(2)
+    validate = cbtn1.button(T["validate"], use_container_width=True)
+    run = cbtn2.button(T["run"], use_container_width=True, type="primary")
 
 
 # ---------------- Data ----------------
@@ -290,6 +326,25 @@ def fetch_share_info(tickers: tuple[str, ...]) -> pd.DataFrame:
     return pd.DataFrame(rows).set_index("Ticker")
 
 
+@st.cache_data(ttl=60 * 60 * 24, show_spinner=False)
+def validate_tickers(tickers: tuple[str, ...]) -> dict[str, str | None]:
+    """Return {ticker: company_name or None if invalid}."""
+    out: dict[str, str | None] = {}
+    for t in tickers:
+        try:
+            fi = yf.Ticker(t).fast_info
+            # fast_info hits a lighter endpoint — fall back to .info if it's empty
+            price = getattr(fi, "last_price", None)
+            if price:
+                info = yf.Ticker(t).info
+                out[t] = info.get("shortName") or info.get("longName") or t
+            else:
+                out[t] = None
+        except Exception:
+            out[t] = None
+    return out
+
+
 def build_index(prices: pd.DataFrame, weights: dict[str, float], base: float) -> pd.Series:
     normalized = prices.divide(prices.iloc[0])
     weighted = normalized.multiply(pd.Series(weights))
@@ -315,10 +370,51 @@ if not tickers:
     st.info(T["empty_tickers"])
     st.stop()
 
+
+def _render_chips(valid_map: dict[str, str | None]):
+    """Render validation chips: green for valid, red for invalid."""
+    valid_items = [(k, v) for k, v in valid_map.items() if v]
+    invalid = [k for k, v in valid_map.items() if not v]
+
+    chips_html = ""
+    for tk, name in valid_items:
+        chips_html += (
+            f"<span style='display:inline-block; background:{CARD}; border:1px solid {ACCENT}; "
+            f"color:{ACCENT}; padding:4px 10px; border-radius:14px; margin:3px 4px 3px 0; "
+            f"font-size:0.82rem;'>✓ <b>{tk}</b> · <span style='color:{MUTED}'>{name}</span></span>"
+        )
+    for tk in invalid:
+        chips_html += (
+            f"<span style='display:inline-block; background:#FBEEE7; border:1px solid #D88A6B; "
+            f"color:#9E4429; padding:4px 10px; border-radius:14px; margin:3px 4px 3px 0; "
+            f"font-size:0.82rem;'>✗ <b>{tk}</b></span>"
+        )
+    st.markdown(chips_html, unsafe_allow_html=True)
+    if invalid:
+        st.caption(f"{T['invalid_tickers']}: {', '.join(invalid)}")
+
+
+# Run validation-only (don't proceed to fetch prices)
+if validate:
+    with st.spinner(T["validating"]):
+        valid_map = validate_tickers(tickers)
+    _render_chips(valid_map)
+    st.stop()
+
 if not run and "loaded" not in st.session_state:
     st.info(T["hint"])
     st.stop()
 st.session_state["loaded"] = True
+
+# Quick validation as a chip strip above the dashboard
+with st.spinner(T["validating"]):
+    valid_map = validate_tickers(tickers)
+_render_chips(valid_map)
+# Filter to valid only before fetching
+tickers = tuple(t for t, name in valid_map.items() if name)
+if not tickers:
+    st.error(T["no_data"])
+    st.stop()
 
 with st.spinner(T["loading_prices"]):
     prices = fetch_prices(tickers, start_date, end_date)
