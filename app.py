@@ -712,11 +712,19 @@ with cb:
     st.markdown(f"## {T['weights']}")
     pie = px.pie(
         values=list(weights.values()), names=list(weights.keys()),
-        hole=0.55, color_discrete_sequence=PALETTE,
+        hole=0.5, color_discrete_sequence=PALETTE,
     )
     pie.update_traces(textposition="outside", textinfo="label+percent",
-                      marker=dict(line=dict(color=BG, width=2)))
-    st.plotly_chart(_minimal(pie, 320), use_container_width=True)
+                      marker=dict(line=dict(color=BG, width=2)),
+                      sort=False)
+    pie.update_layout(
+        height=400, width=400, autosize=False,
+        margin=dict(l=20, r=20, t=20, b=20),
+        plot_bgcolor=BG, paper_bgcolor=BG,
+        font=dict(family="-apple-system, sans-serif", size=12, color=INK),
+        showlegend=False,
+    )
+    st.plotly_chart(pie, use_container_width=False)
 
 # ---------------- Sector breakdown ----------------
 st.markdown(f"## {T['sector_title']}")
@@ -727,15 +735,26 @@ for t in prices.columns:
     sec = share_info.loc[t, "Sector"] or T["sector_unknown"]
     sector_weights[sec] = sector_weights.get(sec, 0) + weights[t]
 
-sec_col1, sec_col2 = st.columns([1, 1.3])
+sec_col1, sec_col2 = st.columns([1.1, 1])
 with sec_col1:
     sec_pie = px.pie(
         values=list(sector_weights.values()), names=list(sector_weights.keys()),
-        hole=0.55, color_discrete_sequence=PALETTE,
+        hole=0.5, color_discrete_sequence=PALETTE,
     )
-    sec_pie.update_traces(textposition="outside", textinfo="label+percent",
-                          marker=dict(line=dict(color=BG, width=2)))
-    st.plotly_chart(_minimal(sec_pie, 320), use_container_width=True)
+    sec_pie.update_traces(
+        textposition="outside", textinfo="label+percent",
+        marker=dict(line=dict(color=BG, width=2)),
+        sort=False,
+    )
+    # Force a square canvas so the donut stays perfectly round
+    sec_pie.update_layout(
+        height=440, width=440, autosize=False,
+        margin=dict(l=20, r=20, t=20, b=20),
+        plot_bgcolor=BG, paper_bgcolor=BG,
+        font=dict(family="-apple-system, sans-serif", size=12, color=INK),
+        showlegend=False,
+    )
+    st.plotly_chart(sec_pie, use_container_width=False)
 with sec_col2:
     sec_df = (pd.DataFrame({
         T["sector_title"]: list(sector_weights.keys()),

@@ -310,14 +310,26 @@ def _drawdown_chart(index_series, benchmark, bench_label, t):
 
 
 def _sector_chart(sector_weights, t):
-    fig, ax = plt.subplots(figsize=(4.5, 3.5))
+    # Square figure so the donut renders as a perfect circle, not an oval
+    fig, ax = plt.subplots(figsize=(6.0, 6.0))
     palette = ["#C75B3C", "#3D2B1F", "#D9A679", "#8A7968", "#6B4F3A", "#E8C39E", "#A0522D", "#B07B5A"]
     labels = list(sector_weights.keys())
     values = list(sector_weights.values())
-    ax.pie(values, labels=labels, colors=palette[:len(labels)],
-           autopct="%1.0f%%", textprops={"color": INK, "fontsize": 8.5},
-           wedgeprops=dict(width=0.45, edgecolor=BG))
-    ax.set_title(t["title_sector_chart"], loc="left", fontsize=11, weight="medium", color=INK)
+    wedges, texts, autotexts = ax.pie(
+        values, labels=labels, colors=palette[:len(labels)],
+        autopct="%1.0f%%",
+        startangle=90, counterclock=False,
+        pctdistance=0.78, labeldistance=1.08,
+        textprops={"color": INK, "fontsize": 10},
+        wedgeprops=dict(width=0.40, edgecolor=BG, linewidth=2),
+    )
+    for at in autotexts:
+        at.set_color("#FFFFFF")
+        at.set_fontsize(10)
+        at.set_weight("bold")
+    ax.set_aspect("equal")   # force circle
+    ax.set_title(t["title_sector_chart"], loc="left", fontsize=12, weight="medium",
+                 color=INK, pad=14)
     fig.patch.set_facecolor(BG)
     return _fig_to_buf(fig)
 
@@ -602,7 +614,8 @@ def generate_pdf_report(
     # ===== Sector breakdown + takeaway =====
     if sector_weights:
         story.append(Paragraph(t["h_sector"], h2_style))
-        story.append(Image(_sector_chart(sector_weights, t), width=11 * cm, height=8 * cm))
+        # keep aspect ratio square so the donut isn't squashed
+        story.append(Image(_sector_chart(sector_weights, t), width=12 * cm, height=12 * cm))
         takeaway(_sector_text(sector_weights, t))
 
     story.append(PageBreak())
