@@ -6,6 +6,7 @@ understand what the chart is saying.
 """
 from __future__ import annotations
 
+import os
 from datetime import date
 from io import BytesIO
 
@@ -22,6 +23,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (
     Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
 )
@@ -38,36 +40,92 @@ CALLOUT_BG = "#FBEEE7"
 
 
 # ---------- Font setup (run once per process) ----------
-_CJK_FONT_NAME_RL = "STSong-Light"          # reportlab built-in CID, always available
-_CJK_FONT_NAME_MPL: str | None = None        # detected on first use
+_CJK_FONT_NAME_RL = "Helvetica"          # detected on first call to _setup_fonts()
+_CJK_FONT_NAME_MPL: str | None = None
+_FONTS_READY = False
+
+
+# Candidate TTF/OTF/TTC paths — first hit wins. Order matters: prefer
+# Traditional Chinese coverage (TC variants), then Simplified, then Japanese.
+_TTF_CANDIDATES = [
+    # macOS
+    "/System/Library/Fonts/PingFang.ttc",
+    "/System/Library/Fonts/STHeiti Light.ttc",
+    "/System/Library/Fonts/STHeiti Medium.ttc",
+    "/System/Library/Fonts/Supplemental/Songti.ttc",
+    "/Library/Fonts/Songti.ttc",
+    # Streamlit Cloud Linux (after `fonts-noto-cjk` from packages.txt)
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJKtc-Regular.otf",
+    "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    # Generic Linux fallbacks
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    "/usr/share/fonts/truetype/arphic/uming.ttc",
+]
+
+
+def _find_ttf() -> str | None:
+    for p in _TTF_CANDIDATES:
+        if os.path.exists(p):
+            return p
+    return None
 
 
 def _setup_fonts() -> None:
-    """Register reportlab CID CJK font and pick the best CJK font for matplotlib."""
-    global _CJK_FONT_NAME_MPL
-    # reportlab — register once
-    try:
-        if _CJK_FONT_NAME_RL not in pdfmetrics.getRegisteredFontNames():
-            pdfmetrics.registerFont(UnicodeCIDFont(_CJK_FONT_NAME_RL))
-    except Exception:
-        pass
+    """Register a real TTF CJK font for reportlab and matplotlib (once per process)."""
+    global _CJK_FONT_NAME_RL, _CJK_FONT_NAME_MPL, _FONTS_READY
+    if _FONTS_READY:
+        return
 
-    # matplotlib — find first available CJK family
+    # ---- reportlab ----
+    ttf = _find_ttf()
+    registered = False
+    if ttf:
+        # .ttc files contain multiple sub-fonts — try the first few until one works
+        for idx in (0, 1, 2):
+            try:
+                pdfmetrics.registerFont(TTFont("CJK", ttf, subfontIndex=idx))
+                _CJK_FONT_NAME_RL = "CJK"
+                registered = True
+                break
+            except Exception:
+                continue
+    if not registered:
+        # Last resort: MSung-Light covers Traditional Chinese better than STSong-Light
+        for cid_name in ("MSung-Light", "STSong-Light"):
+            try:
+                pdfmetrics.registerFont(UnicodeCIDFont(cid_name))
+                _CJK_FONT_NAME_RL = cid_name
+                break
+            except Exception:
+                continue
+
+    # ---- matplotlib ----
+    if ttf:
+        # Register the same file with matplotlib so chart labels are not boxes
+        try:
+            fm.fontManager.addfont(ttf)
+            # font_manager caches the name after addfont
+            prop = fm.FontProperties(fname=ttf)
+            _CJK_FONT_NAME_MPL = prop.get_name()
+        except Exception:
+            pass
     if _CJK_FONT_NAME_MPL is None:
-        candidates = [
-            "Noto Sans CJK TC", "Noto Sans CJK SC", "Noto Sans CJK JP",
-            "Noto Sans TC", "Noto Sans SC",
-            "PingFang TC", "PingFang SC", "Heiti TC", "Heiti SC",
-            "Hiragino Sans GB", "Microsoft JhengHei", "SimHei",
-        ]
+        # Fall back to whatever's already in the font cache
+        candidates = ["Noto Sans CJK TC", "Noto Sans CJK SC",
+                      "PingFang TC", "PingFang SC", "Heiti TC", "Heiti SC",
+                      "Hiragino Sans GB", "Microsoft JhengHei", "SimHei"]
         available = {f.name for f in fm.fontManager.ttflist}
         for c in candidates:
             if c in available:
                 _CJK_FONT_NAME_MPL = c
                 break
-        if _CJK_FONT_NAME_MPL:
-            matplotlib.rcParams["font.sans-serif"] = [_CJK_FONT_NAME_MPL, "DejaVu Sans"]
-            matplotlib.rcParams["axes.unicode_minus"] = False
+    if _CJK_FONT_NAME_MPL:
+        matplotlib.rcParams["font.sans-serif"] = [_CJK_FONT_NAME_MPL, "DejaVu Sans"]
+        matplotlib.rcParams["axes.unicode_minus"] = False
+
+    _FONTS_READY = True
 
 
 # ---------- i18n text dictionary ----------
@@ -360,9 +418,14 @@ def generate_pdf_report(
     _setup_fonts()
     t = TXT.get(lang, TXT["en"])
     cjk = lang == "zh"
-    body_font = _CJK_FONT_NAME_RL if cjk else "Helvetica"
-    bold_font = _CJK_FONT_NAME_RL if cjk else "Helvetica-Bold"  # CID lacks bold; same font reused
-    italic_font = _CJK_FONT_NAME_RL if cjk else "Helvetica-Oblique"
+    # When rendering Chinese, use the CJK TTF for EVERY piece of text (including
+    # English/ASCII) so weights, italics, and headings stay visually consistent.
+    if cjk:
+        body_font = bold_font = italic_font = _CJK_FONT_NAME_RL
+    else:
+        body_font = "Helvetica"
+        bold_font = "Helvetica-Bold"
+        italic_font = "Helvetica-Oblique"
 
     buf = BytesIO()
     doc = SimpleDocTemplate(
@@ -372,25 +435,26 @@ def generate_pdf_report(
         title=t["report_title"],
     )
 
-    title_style = ParagraphStyle("Title", fontName=bold_font, fontSize=20,
+    title_style = ParagraphStyle("Title", fontName=bold_font, fontSize=22,
                                  textColor=HexColor(ACCENT), alignment=TA_LEFT,
-                                 spaceAfter=4, leading=24)
+                                 spaceAfter=6, leading=26)
     sub_style = ParagraphStyle("Sub", fontName=body_font, fontSize=10,
-                               textColor=HexColor(MUTED), spaceAfter=18)
-    h2_style = ParagraphStyle("H2", fontName=bold_font, fontSize=13,
-                              textColor=HexColor(INK), spaceBefore=14, spaceAfter=6)
+                               textColor=HexColor(MUTED), spaceAfter=20, leading=14)
+    h2_style = ParagraphStyle("H2", fontName=bold_font, fontSize=14,
+                              textColor=HexColor(INK), spaceBefore=18, spaceAfter=8,
+                              leading=18, keepWithNext=True)
     body_style = ParagraphStyle("Body", fontName=body_font, fontSize=10,
-                                textColor=HexColor(INK), leading=14, spaceAfter=6)
+                                textColor=HexColor(INK), leading=15, spaceAfter=6)
     caption_style = ParagraphStyle("Caption", fontName=italic_font, fontSize=9,
-                                   textColor=HexColor(MUTED), spaceAfter=10)
-    bullet_style = ParagraphStyle("Bullet", parent=body_style, leftIndent=14,
-                                  bulletIndent=4, spaceAfter=4)
+                                   textColor=HexColor(MUTED), spaceAfter=10, leading=13)
+    bullet_style = ParagraphStyle("Bullet", parent=body_style, leftIndent=16,
+                                  bulletIndent=4, spaceAfter=5, leading=15)
     takeaway_style = ParagraphStyle(
         "Takeaway", fontName=body_font, fontSize=10, textColor=HexColor(INK),
-        leading=14, leftIndent=8, rightIndent=8,
-        spaceBefore=4, spaceAfter=10,
+        leading=15, leftIndent=10, rightIndent=10,
+        spaceBefore=6, spaceAfter=14,
         backColor=HexColor(CALLOUT_BG), borderColor=HexColor(ACCENT),
-        borderWidth=0, borderPadding=8,
+        borderWidth=0, borderPadding=10,
     )
 
     def takeaway(text: str):
@@ -437,15 +501,15 @@ def generate_pdf_report(
         ("TEXTCOLOR", (0, 0), (-1, 0), HexColor("#FFFFFF")),
         ("FONTNAME", (0, 0), (-1, 0), bold_font),
         ("FONTNAME", (0, 1), (-1, -1), body_font),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("FONTSIZE", (0, 0), (-1, -1), 9.5),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [HexColor(CARD), HexColor(BG)]),
         ("TEXTCOLOR", (0, 1), (-1, -1), HexColor(INK)),
         ("GRID", (0, 0), (-1, -1), 0.4, HexColor(LINE)),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 7),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
     ]))
     story.append(kpi_tbl)
     story.append(Spacer(1, 12))
@@ -516,15 +580,16 @@ def generate_pdf_report(
         ("TEXTCOLOR", (0, 0), (-1, 0), HexColor("#FFFFFF")),
         ("FONTNAME", (0, 0), (-1, 0), bold_font),
         ("FONTNAME", (0, 1), (-1, -1), body_font),
-        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [HexColor(CARD), HexColor(BG)]),
         ("TEXTCOLOR", (0, 1), (-1, -1), HexColor(INK)),
         ("GRID", (0, 0), (-1, -1), 0.3, HexColor(LINE)),
         ("ALIGN", (3, 1), (4, -1), "RIGHT"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 5),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
     ]))
     story.append(const_tbl)
     max_t = max(weights, key=weights.get)
@@ -560,7 +625,9 @@ def generate_pdf_report(
     story.append(Spacer(1, 16))
     story.append(Paragraph(t["h_methodology"], h2_style))
     story.append(Paragraph(t["methodology"], body_style))
-    story.append(Paragraph(f"<i>{t['disclaimer']}</i>", caption_style))
+    # CJK font has no italic variant — skip the <i> tag to avoid placeholder boxes
+    disclaimer_html = t["disclaimer"] if cjk else f"<i>{t['disclaimer']}</i>"
+    story.append(Paragraph(disclaimer_html, caption_style))
 
     doc.build(story)
     return buf.getvalue()
