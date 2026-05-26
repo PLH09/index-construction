@@ -10,8 +10,6 @@ import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
 from sklearn.decomposition import PCA
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_absolute_error, r2_score
 
 # ---------------- i18n ----------------
 TEXTS = {
@@ -78,22 +76,6 @@ TEXTS = {
         "pca_interpret_pc1": "PC1 解釋了 {p:.0f}% 的變異 — 通常代表整體市場走勢（系統性風險）",
         "pca_interpret_pc2": "PC2 解釋了 {p:.0f}% — 通常代表產業 / 風格分歧",
         "pca_interpret_pc3": "PC3 解釋了 {p:.0f}% — 個別公司特有風險",
-        "ml_title": "機器學習：報酬預測 (Random Forest)",
-        "ml_caption": "用過去的動能、波動度、RSI 等技術指標，訓練 Random Forest 預測下一日報酬。⚠️ 僅供教學示範 — 股票報酬預測極困難，請勿用於實際交易決策。",
-        "ml_need_more": "需要至少 3 支股票與 120 天以上資料才能訓練模型。",
-        "ml_training": "訓練模型中…",
-        "ml_metrics": "模型表現 (Test set)",
-        "ml_r2": "R²",
-        "ml_mae": "MAE (平均誤差)",
-        "ml_features": "特徵重要性 Top 5",
-        "ml_predictions": "預測下一日報酬",
-        "ml_ticker": "股票",
-        "ml_pred_return": "預測報酬 %",
-        "ml_signal": "訊號",
-        "ml_bullish": "看多",
-        "ml_bearish": "看空",
-        "ml_neutral": "中性",
-        "ml_disclaimer": "💡 R² 接近 0 是正常的 — 短期股票報酬幾乎是 random walk。這個模型的價值在於展示 ML pipeline，而非真實預測力。",
     },
     "en": {
         "page_title": "Index Construction",
@@ -158,22 +140,6 @@ TEXTS = {
         "pca_interpret_pc1": "PC1 explains {p:.0f}% of variance — typically the broad market move (systematic risk)",
         "pca_interpret_pc2": "PC2 explains {p:.0f}% — typically a sector / style tilt",
         "pca_interpret_pc3": "PC3 explains {p:.0f}% — idiosyncratic / company-specific risk",
-        "ml_title": "Machine Learning: Return Forecast (Random Forest)",
-        "ml_caption": "Train a Random Forest on engineered features (momentum, volatility, RSI) to predict next-day returns. ⚠️ Educational demo only — predicting stock returns is notoriously hard; do not trade on this.",
-        "ml_need_more": "Need at least 3 tickers and 120+ days of data to train the model.",
-        "ml_training": "Training model…",
-        "ml_metrics": "Model performance (test set)",
-        "ml_r2": "R²",
-        "ml_mae": "MAE",
-        "ml_features": "Top 5 feature importances",
-        "ml_predictions": "Next-day return forecast",
-        "ml_ticker": "Ticker",
-        "ml_pred_return": "Predicted return %",
-        "ml_signal": "Signal",
-        "ml_bullish": "Bullish",
-        "ml_bearish": "Bearish",
-        "ml_neutral": "Neutral",
-        "ml_disclaimer": "💡 An R² near zero is expected — short-term returns are nearly a random walk. The value here is demonstrating the ML pipeline, not real predictive power.",
     },
 }
 
@@ -328,64 +294,6 @@ def build_index(prices: pd.DataFrame, weights: dict[str, float], base: float) ->
     normalized = prices.divide(prices.iloc[0])
     weighted = normalized.multiply(pd.Series(weights))
     return weighted.sum(axis=1) * base
-
-
-def build_ml_features(prices: pd.DataFrame) -> pd.DataFrame:
-    """Build a long-format feature table: one row per (date, ticker)."""
-    frames = []
-    for t in prices.columns:
-        s = prices[t].dropna()
-        r = s.pct_change()
-        df = pd.DataFrame({
-            "ticker": t,
-            "ret_1d": r,
-            "ret_5d": s.pct_change(5),
-            "ret_20d": s.pct_change(20),
-            "vol_20d": r.rolling(20).std(),
-            "momentum_60d": s.pct_change(60),
-            "ma_ratio": s / s.rolling(20).mean() - 1,
-        })
-        # RSI 14d
-        gain = r.where(r > 0, 0).rolling(14).mean()
-        loss = (-r.where(r < 0, 0)).rolling(14).mean()
-        rs = gain / loss.replace(0, np.nan)
-        df["rsi_14d"] = 100 - 100 / (1 + rs)
-        # Target = next-day return
-        df["target"] = r.shift(-1)
-        frames.append(df)
-    out = pd.concat(frames).dropna()
-    return out
-
-
-@st.cache_data(ttl=60 * 30, show_spinner=False)
-def train_rf_model(prices_csv: str, _key: tuple) -> dict:
-    """Cached training. _key is (start, end, tickers) for cache invalidation."""
-    prices = pd.read_csv(pd.io.common.StringIO(prices_csv), index_col=0, parse_dates=True)
-    feats = build_ml_features(prices)
-    feature_cols = ["ret_1d", "ret_5d", "ret_20d", "vol_20d", "momentum_60d", "ma_ratio", "rsi_14d"]
-    # Ticker one-hot
-    X_all = pd.concat([feats[feature_cols], pd.get_dummies(feats["ticker"], prefix="tkr")], axis=1)
-    y_all = feats["target"]
-
-    # Chronological 80/20 split
-    split = int(len(X_all) * 0.8)
-    X_tr, X_te = X_all.iloc[:split], X_all.iloc[split:]
-    y_tr, y_te = y_all.iloc[:split], y_all.iloc[split:]
-
-    model = RandomForestRegressor(
-        n_estimators=200, max_depth=6, min_samples_leaf=20,
-        random_state=42, n_jobs=-1,
-    ).fit(X_tr, y_tr)
-
-    y_pred = model.predict(X_te)
-    return {
-        "r2": r2_score(y_te, y_pred),
-        "mae": mean_absolute_error(y_te, y_pred),
-        "importances": pd.Series(model.feature_importances_, index=X_all.columns).sort_values(ascending=False),
-        "model": model,
-        "feature_cols": feature_cols,
-        "tickers": list(prices.columns),
-    }
 
 
 def fmt_big(n: float) -> str:
@@ -610,69 +518,6 @@ else:
         interp.append(T["pca_interpret_pc3"].format(p=explained[2]))
     for line in interp:
         st.markdown(f"• {line}")
-
-# ---------------- Machine Learning: Return Forecast ----------------
-st.markdown(f"## {T['ml_title']}")
-st.markdown(f"<div class='caption'>{T['ml_caption']}</div>", unsafe_allow_html=True)
-
-if prices.shape[1] < 3 or prices.shape[0] < 120:
-    st.info(T["ml_need_more"])
-else:
-    with st.spinner(T["ml_training"]):
-        result = train_rf_model(
-            prices.to_csv(),
-            (str(start_date), str(end_date), tuple(prices.columns)),
-        )
-
-    # Metrics
-    m1, m2 = st.columns(2)
-    m1.metric(T["ml_r2"], f"{result['r2']:.4f}")
-    m2.metric(T["ml_mae"], f"{result['mae']*100:.3f}%")
-
-    ml_left, ml_right = st.columns([1, 1.2])
-
-    # Feature importance
-    with ml_left:
-        st.markdown(f"**{T['ml_features']}**")
-        top_feats = result["importances"].head(5)[::-1]  # reverse for horizontal bar
-        fig_imp = px.bar(
-            x=top_feats.values, y=top_feats.index, orientation="h",
-            color_discrete_sequence=[ACCENT],
-        )
-        fig_imp.update_traces(texttemplate="%{x:.3f}", textposition="outside")
-        fig_imp.update_xaxes(range=[0, top_feats.max() * 1.2])
-        st.plotly_chart(_minimal(fig_imp, 280), use_container_width=True)
-
-    # Next-day predictions per ticker
-    with ml_right:
-        st.markdown(f"**{T['ml_predictions']}**")
-        # Build feature row for each ticker = most recent row
-        latest_feats = build_ml_features(prices).groupby("ticker").tail(1)
-        latest_X = pd.concat([
-            latest_feats[result["feature_cols"]],
-            pd.get_dummies(latest_feats["ticker"], prefix="tkr"),
-        ], axis=1)
-        # Align columns with training set
-        train_cols = result["model"].feature_names_in_
-        for c in train_cols:
-            if c not in latest_X.columns:
-                latest_X[c] = 0
-        latest_X = latest_X[train_cols]
-        preds = result["model"].predict(latest_X) * 100  # %
-
-        def _signal(p):
-            if p > 0.3: return f"▲ {T['ml_bullish']}"
-            if p < -0.3: return f"▼ {T['ml_bearish']}"
-            return f"— {T['ml_neutral']}"
-
-        pred_df = pd.DataFrame({
-            T["ml_ticker"]: latest_feats["ticker"].values,
-            T["ml_pred_return"]: preds.round(3),
-            T["ml_signal"]: [_signal(p) for p in preds],
-        }).sort_values(T["ml_pred_return"], ascending=False).reset_index(drop=True)
-        st.dataframe(pred_df, use_container_width=True, height=280, hide_index=True)
-
-    st.markdown(f"<div class='caption'>{T['ml_disclaimer']}</div>", unsafe_allow_html=True)
 
 # Download
 st.markdown("---")
