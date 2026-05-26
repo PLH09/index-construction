@@ -182,6 +182,7 @@ TXT = {
         "tk_pca_typical": "PC1 explains {p1:.0f}% — broad market beta is the primary driver, typical for sector-themed baskets.",
         "tk_pca_diverse": "PC1 explains {p1:.0f}% — surprisingly diversified return drivers.",
         "tk_constituents": "Largest weight: <b>{max_t}</b> ({max_w:.1f}%). Smallest: {min_t} ({min_w:.1f}%).",
+        "tk_constituents_equal": "Equal-weight basket — each of the {n} constituents gets {w:.1f}%.",
         # Sharpe interp
         "sharpe_excellent": "Sharpe {s:.2f} — Excellent risk-adjusted return.",
         "sharpe_good": "Sharpe {s:.2f} — Good. Returns comfortably justify the volatility taken.",
@@ -245,6 +246,7 @@ TXT = {
         "tk_pca_typical": "PC1 解釋了 {p1:.0f}% — 整體市場 beta 為主驅動，主題型組合典型水準。",
         "tk_pca_diverse": "PC1 解釋了 {p1:.0f}% — 報酬驅動因子相當分散。",
         "tk_constituents": "最大權重：<b>{max_t}</b>（{max_w:.1f}%）；最小：{min_t}（{min_w:.1f}%）。",
+        "tk_constituents_equal": "等權重組合 — {n} 檔成分股各占 {w:.1f}%。",
         "sharpe_excellent": "Sharpe {s:.2f} — 風險調整後報酬極佳。",
         "sharpe_good": "Sharpe {s:.2f} — 表現良好，報酬足以補償所承擔的波動。",
         "sharpe_moderate": "Sharpe {s:.2f} — 中等水準，有補償但不算豐厚。",
@@ -290,7 +292,7 @@ def _index_chart(index_series, benchmark, base, bench_label, t):
                 linestyle="--", label=f"{bench_label}")
     ax.axhline(base, color=MUTED, linestyle=":", linewidth=0.8)
     ax.legend(loc="best", frameon=False, fontsize=8)
-    ax.set_title(t["title_perf_chart"], loc="left", fontsize=11, weight="medium")
+    ax.set_title(t["title_perf_chart"], loc="left", fontsize=12, weight="medium", pad=12)
     _style_axes(ax, "")
     return _fig_to_buf(fig)
 
@@ -305,7 +307,7 @@ def _drawdown_chart(index_series, benchmark, bench_label, t):
         ax.plot(bdd.index, bdd.values, color=INK, linestyle="--", linewidth=1.0, label=bench_label)
         ax.legend(loc="lower left", frameon=False, fontsize=7)
     ax.axhline(0, color=LINE, linewidth=0.8)
-    ax.set_title(t["title_dd_chart"], loc="left", fontsize=11, weight="medium")
+    ax.set_title(t["title_dd_chart"], loc="left", fontsize=12, weight="medium", pad=12)
     _style_axes(ax, "")
     return _fig_to_buf(fig)
 
@@ -336,20 +338,22 @@ def _sector_chart(sector_weights, t):
 
 
 def _corr_chart(corr, t):
-    fig, ax = plt.subplots(figsize=(5.5, 4.5))
+    fig, ax = plt.subplots(figsize=(5.5, 5.0))
     cmap = matplotlib.colors.LinearSegmentedColormap.from_list(
         "terracotta_div", [INK, BG, ACCENT]
     )
     ax.imshow(corr.values, cmap=cmap, vmin=-1, vmax=1, aspect="auto")
     ax.set_xticks(range(len(corr.columns)))
     ax.set_yticks(range(len(corr.index)))
-    ax.set_xticklabels(corr.columns, color=INK, fontsize=8, rotation=45, ha="right")
-    ax.set_yticklabels(corr.index, color=INK, fontsize=8)
+    ax.set_xticklabels(corr.columns, color=INK, fontsize=9, rotation=45, ha="right")
+    ax.set_yticklabels(corr.index, color=INK, fontsize=9)
     for i in range(corr.shape[0]):
         for j in range(corr.shape[1]):
             ax.text(j, i, f"{corr.values[i, j]:.2f}", ha="center", va="center",
-                    color=INK, fontsize=7)
-    ax.set_title(t["title_corr_chart"], loc="left", fontsize=11, weight="medium", color=INK)
+                    color=INK, fontsize=7.5)
+    # ``pad=16`` lifts the title above the axes so it doesn't overlap the heatmap
+    ax.set_title(t["title_corr_chart"], loc="left", fontsize=12, weight="medium",
+                 color=INK, pad=16)
     fig.patch.set_facecolor(BG)
     return _fig_to_buf(fig)
 
@@ -448,26 +452,35 @@ def generate_pdf_report(
         title=t["report_title"],
     )
 
+    # ``wordWrap='CJK'`` tells reportlab to break between any two CJK characters,
+    # which fixes the awkward mid-word breaks (e.g. wrapping right after "為").
+    wrap = "CJK" if cjk else None
+
     title_style = ParagraphStyle("Title", fontName=bold_font, fontSize=22,
                                  textColor=HexColor(ACCENT), alignment=TA_LEFT,
-                                 spaceAfter=6, leading=26)
+                                 spaceAfter=6, leading=26, wordWrap=wrap)
     sub_style = ParagraphStyle("Sub", fontName=body_font, fontSize=10,
-                               textColor=HexColor(MUTED), spaceAfter=20, leading=14)
+                               textColor=HexColor(MUTED), spaceAfter=20, leading=14,
+                               wordWrap=wrap)
     h2_style = ParagraphStyle("H2", fontName=bold_font, fontSize=14,
                               textColor=HexColor(INK), spaceBefore=18, spaceAfter=8,
-                              leading=18, keepWithNext=True)
+                              leading=18, keepWithNext=True, wordWrap=wrap)
     body_style = ParagraphStyle("Body", fontName=body_font, fontSize=10,
-                                textColor=HexColor(INK), leading=15, spaceAfter=6)
+                                textColor=HexColor(INK), leading=15, spaceAfter=6,
+                                wordWrap=wrap)
     caption_style = ParagraphStyle("Caption", fontName=italic_font, fontSize=9,
-                                   textColor=HexColor(MUTED), spaceAfter=10, leading=13)
+                                   textColor=HexColor(MUTED), spaceAfter=10, leading=13,
+                                   wordWrap=wrap)
     bullet_style = ParagraphStyle("Bullet", parent=body_style, leftIndent=16,
-                                  bulletIndent=4, spaceAfter=5, leading=15)
+                                  bulletIndent=4, spaceAfter=5, leading=15,
+                                  wordWrap=wrap)
     takeaway_style = ParagraphStyle(
         "Takeaway", fontName=body_font, fontSize=10, textColor=HexColor(INK),
         leading=15, leftIndent=10, rightIndent=10,
         spaceBefore=6, spaceAfter=14,
         backColor=HexColor(CALLOUT_BG), borderColor=HexColor(ACCENT),
         borderWidth=0, borderPadding=10,
+        wordWrap=wrap,
     )
 
     def takeaway(text: str):
@@ -607,10 +620,17 @@ def generate_pdf_report(
     story.append(const_tbl)
     max_t = max(weights, key=weights.get)
     min_t = min(weights, key=weights.get)
-    takeaway(t["tk_constituents"].format(
-        max_t=max_t, max_w=weights[max_t] * 100,
-        min_t=min_t, min_w=weights[min_t] * 100,
-    ))
+    # If all weights are equal, the max/min comparison is meaningless — emit a
+    # cleaner "equal-weight basket" line instead.
+    if abs(weights[max_t] - weights[min_t]) < 1e-6:
+        takeaway(t["tk_constituents_equal"].format(
+            n=len(weights), w=weights[max_t] * 100,
+        ))
+    else:
+        takeaway(t["tk_constituents"].format(
+            max_t=max_t, max_w=weights[max_t] * 100,
+            min_t=min_t, min_w=weights[min_t] * 100,
+        ))
 
     # ===== Sector breakdown + takeaway =====
     if sector_weights:
@@ -636,29 +656,27 @@ def generate_pdf_report(
         takeaway(_pca_takeaway(pca_explained, t))
 
     # ===== Methodology + disclaimer =====
-    # Justified alignment + matching indents so both paragraphs share a clean
-    # left and right edge — fixes the ragged / mis-aligned look in CJK mode.
+    # TA_LEFT (not JUSTIFY) — justifying mixed CJK + ASCII produces giant gaps
+    # around English words and numbers. wordWrap='CJK' inherited from body_style
+    # already handles per-character wrapping cleanly.
     meta_body_style = ParagraphStyle(
         "MetaBody", parent=body_style,
-        alignment=TA_JUSTIFY,
-        fontSize=9.5, leading=14,
+        alignment=TA_LEFT,
+        fontSize=9.5, leading=15,
         leftIndent=0, rightIndent=0,
         spaceAfter=8,
+        wordWrap=wrap,
     )
     meta_disclaimer_style = ParagraphStyle(
         "MetaDisclaimer", parent=meta_body_style,
-        fontName=body_font,
         fontSize=9, leading=13,
         textColor=HexColor(MUTED),
         spaceBefore=4, spaceAfter=0,
     )
-    story.append(Spacer(1, 16))
-    methodology_block = [
-        Paragraph(t["h_methodology"], h2_style),
-        Paragraph(t["methodology"], meta_body_style),
-        Paragraph(t["disclaimer"], meta_disclaimer_style),
-    ]
-    story.append(KeepTogether(methodology_block))
+    story.append(Spacer(1, 14))
+    story.append(Paragraph(t["h_methodology"], h2_style))
+    story.append(Paragraph(t["methodology"], meta_body_style))
+    story.append(Paragraph(t["disclaimer"], meta_disclaimer_style))
 
     doc.build(story)
     return buf.getvalue()
