@@ -113,7 +113,7 @@ TEXTS = {
         "scenario_compare_table": "情境指標比較",
         "pdf_download": "📄 下載 PDF 報告（含文字解說）",
         "pdf_generating": "產生 PDF 中…",
-        "pdf_note": "PDF 報告以英文撰寫（為兼容雲端字型）",
+        "pdf_note": "PDF 報告會依目前語言設定自動產出（中文 / English）",
     },
     "en": {
         "page_title": "Index Construction",
@@ -213,7 +213,7 @@ TEXTS = {
         "scenario_compare_table": "Scenario metrics",
         "pdf_download": "📄 Download PDF report (with narrative)",
         "pdf_generating": "Generating PDF…",
-        "pdf_note": "PDF report is rendered in English for portable font support.",
+        "pdf_note": "PDF report follows your current language setting (English / 中文).",
     },
 }
 
@@ -937,11 +937,12 @@ with dl2:
             weight_mode_label=weight_choice,
             period=(start_date, end_date),
             pca_explained=pca_explained_for_pdf,
+            lang=L,
         )
     st.download_button(
         T["pdf_download"],
         pdf_bytes,
-        file_name=f"index_construction_{start_date}_{end_date}.pdf",
+        file_name=f"index_construction_{start_date}_{end_date}_{L}.pdf",
         mime="application/pdf",
         use_container_width=True,
     )
