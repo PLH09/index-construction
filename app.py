@@ -92,6 +92,23 @@ TEXTS = {
         "pca_interpret_pc1": "PC1 解釋了 {p:.0f}% 的變異 — 通常代表整體市場走勢（系統性風險）",
         "pca_interpret_pc2": "PC2 解釋了 {p:.0f}% — 通常代表產業 / 風格分歧",
         "pca_interpret_pc3": "PC3 解釋了 {p:.0f}% — 個別公司特有風險",
+        "weight_custom": "自訂權重",
+        "custom_weight_help": "拖曳調整每支股票的權重。按「Normalize」自動歸一化到 100%。",
+        "normalize_btn": "Normalize to 100%",
+        "current_sum": "目前合計",
+        "sector_title": "產業分布",
+        "sector_caption": "依 Yahoo Finance 產業分類，看你的指數是否過度集中。",
+        "sector_unknown": "未知",
+        "corr_title": "成分股相關係數",
+        "corr_caption": "日報酬之間的相關係數。深色 = 高相關（同向動）；淺色 = 真正分散。",
+        "scenarios_title": "情境比較 (Scenarios)",
+        "scenarios_caption": "把現在的設定存成 A / B / C 三個情境，疊在同一張圖上比較。",
+        "save_as": "存成情境",
+        "clear_scenarios": "清除全部",
+        "no_scenarios": "尚未儲存任何情境。按下方按鈕把目前設定儲存。",
+        "scenario_name": "名稱",
+        "scenario_compare_chart": "情境疊圖",
+        "scenario_compare_table": "情境指標比較",
     },
     "en": {
         "page_title": "Index Construction",
@@ -172,6 +189,23 @@ TEXTS = {
         "pca_interpret_pc1": "PC1 explains {p:.0f}% of variance — typically the broad market move (systematic risk)",
         "pca_interpret_pc2": "PC2 explains {p:.0f}% — typically a sector / style tilt",
         "pca_interpret_pc3": "PC3 explains {p:.0f}% — idiosyncratic / company-specific risk",
+        "weight_custom": "Custom weights",
+        "custom_weight_help": "Drag each ticker's weight. Hit Normalize to scale them to 100%.",
+        "normalize_btn": "Normalize to 100%",
+        "current_sum": "Current sum",
+        "sector_title": "Sector breakdown",
+        "sector_caption": "Yahoo Finance sector classification — spot if your index is concentrated.",
+        "sector_unknown": "Unknown",
+        "corr_title": "Component correlations",
+        "corr_caption": "Pairwise correlation of daily returns. Dark = highly correlated (move together); light = genuine diversification.",
+        "scenarios_title": "Scenario comparison",
+        "scenarios_caption": "Save the current setup as A / B / C and overlay all three on one chart.",
+        "save_as": "Save as",
+        "clear_scenarios": "Clear all",
+        "no_scenarios": "No scenarios saved yet. Use the buttons below to snapshot your current setup.",
+        "scenario_name": "Name",
+        "scenario_compare_chart": "Scenario overlay",
+        "scenario_compare_table": "Scenario metrics",
     },
 }
 
@@ -284,6 +318,7 @@ with st.sidebar:
         T["weight_equal"]: "equal",
         T["weight_cap"]: "cap",
         T["weight_float"]: "float",
+        T["weight_custom"]: "custom",
     }
     weight_choice = st.radio(T["weight"], list(weight_label_map.keys()), index=0)
     weight_mode = weight_label_map[weight_choice]
@@ -351,6 +386,7 @@ def fetch_share_info(tickers: tuple[str, ...]) -> pd.DataFrame:
             "Ticker": t,
             "Name": info.get("shortName") or info.get("longName") or t,
             "Currency": info.get("currency", ""),
+            "Sector": info.get("sector", ""),
             "MarketCap": float(cap),
             "TotalShares": float(total),
             "FloatShares": float(float_),
@@ -508,6 +544,38 @@ elif weight_mode == "float":
     ff_cap = {t: floats.get(t, 0) * last[t] for t in prices.columns}
     total = sum(ff_cap.values()) or 1
     weights = {t: ff_cap[t] / total for t in prices.columns}
+elif weight_mode == "custom":
+    # Render sliders inline. Default to equal weight per ticker.
+    st.markdown(f"### {T['weight_custom']}")
+    st.caption(T["custom_weight_help"])
+    default_w = 100.0 / prices.shape[1]
+    custom = {}
+    cols = st.columns(min(4, prices.shape[1]))
+    for i, t in enumerate(prices.columns):
+        key = f"cw_{t}"
+        if key not in st.session_state:
+            st.session_state[key] = round(default_w, 2)
+        with cols[i % len(cols)]:
+            custom[t] = st.number_input(
+                t, min_value=0.0, max_value=100.0, step=1.0, key=key,
+            )
+    csum = sum(custom.values())
+    cnorm_col1, cnorm_col2 = st.columns([1, 3])
+    if cnorm_col1.button(T["normalize_btn"]):
+        if csum > 0:
+            for t in custom:
+                st.session_state[f"cw_{t}"] = round(custom[t] / csum * 100, 2)
+            st.rerun()
+    cnorm_col2.markdown(
+        f"<div style='color:{MUTED}; padding-top:8px;'>{T['current_sum']}: "
+        f"<b style='color:{ACCENT}'>{csum:.1f}%</b></div>",
+        unsafe_allow_html=True,
+    )
+    # Normalize for index calc regardless
+    if csum > 0:
+        weights = {t: custom[t] / csum for t in prices.columns}
+    else:
+        weights = {t: 1 / prices.shape[1] for t in prices.columns}
 else:
     n = prices.shape[1]
     weights = {t: 1 / n for t in prices.columns}
@@ -642,6 +710,31 @@ with cb:
                       marker=dict(line=dict(color=BG, width=2)))
     st.plotly_chart(_minimal(pie, 320), use_container_width=True)
 
+# ---------------- Sector breakdown ----------------
+st.markdown(f"## {T['sector_title']}")
+st.markdown(f"<div class='caption'>{T['sector_caption']}</div>", unsafe_allow_html=True)
+
+sector_weights: dict[str, float] = {}
+for t in prices.columns:
+    sec = share_info.loc[t, "Sector"] or T["sector_unknown"]
+    sector_weights[sec] = sector_weights.get(sec, 0) + weights[t]
+
+sec_col1, sec_col2 = st.columns([1, 1.3])
+with sec_col1:
+    sec_pie = px.pie(
+        values=list(sector_weights.values()), names=list(sector_weights.keys()),
+        hole=0.55, color_discrete_sequence=PALETTE,
+    )
+    sec_pie.update_traces(textposition="outside", textinfo="label+percent",
+                          marker=dict(line=dict(color=BG, width=2)))
+    st.plotly_chart(_minimal(sec_pie, 320), use_container_width=True)
+with sec_col2:
+    sec_df = (pd.DataFrame({
+        T["sector_title"]: list(sector_weights.keys()),
+        T["col_weight"]: [round(v * 100, 2) for v in sector_weights.values()],
+    }).sort_values(T["col_weight"], ascending=False).reset_index(drop=True))
+    st.dataframe(sec_df, use_container_width=True, height=320, hide_index=True)
+
 # Shares
 st.markdown(f"## {T['shares']}")
 shares_table = pd.DataFrame({
@@ -732,6 +825,78 @@ else:
         interp.append(T["pca_interpret_pc3"].format(p=explained[2]))
     for line in interp:
         st.markdown(f"• {line}")
+
+# ---------------- Correlation heatmap ----------------
+st.markdown(f"## {T['corr_title']}")
+st.markdown(f"<div class='caption'>{T['corr_caption']}</div>", unsafe_allow_html=True)
+
+if prices.shape[1] >= 2:
+    corr = prices.pct_change().dropna().corr()
+    fig_corr = px.imshow(
+        corr.values, x=corr.columns, y=corr.index,
+        zmin=-1, zmax=1, text_auto=".2f", aspect="auto",
+        color_continuous_scale=[[0, "#3D2B1F"], [0.5, BG], [1, ACCENT]],
+    )
+    fig_corr.update_layout(
+        height=max(320, 50 * len(corr.columns) + 80),
+        margin=dict(l=0, r=0, t=10, b=0),
+        plot_bgcolor=BG, paper_bgcolor=BG,
+        font=dict(family="-apple-system, sans-serif", size=12, color=INK),
+        coloraxis_showscale=False,
+    )
+    st.plotly_chart(fig_corr, use_container_width=True)
+
+# ---------------- Scenario comparison ----------------
+st.markdown(f"## {T['scenarios_title']}")
+st.markdown(f"<div class='caption'>{T['scenarios_caption']}</div>", unsafe_allow_html=True)
+
+if "scenarios" not in st.session_state:
+    st.session_state["scenarios"] = {}
+
+sc_btn = st.columns(4)
+for i, slot in enumerate(["A", "B", "C"]):
+    if sc_btn[i].button(f"{T['save_as']} {slot}", use_container_width=True):
+        st.session_state["scenarios"][slot] = {
+            "index": index_series.copy(),
+            "ann_return": ann_return,
+            "volatility": volatility,
+            "sharpe": metrics["sharpe"],
+            "max_dd": metrics["max_dd"],
+            "tickers": list(prices.columns),
+            "weight_mode": weight_choice,
+            "n": prices.shape[1],
+        }
+if sc_btn[3].button(T["clear_scenarios"], use_container_width=True):
+    st.session_state["scenarios"] = {}
+    st.rerun()
+
+scenarios = st.session_state.get("scenarios", {})
+if not scenarios:
+    st.info(T["no_scenarios"])
+else:
+    fig_sc = go.Figure()
+    sc_palette = [ACCENT, INK, "#8A7968"]
+    for (slot, payload), color in zip(scenarios.items(), sc_palette):
+        s = payload["index"]
+        norm = s / s.iloc[0] * base_value
+        fig_sc.add_trace(go.Scatter(
+            x=norm.index, y=norm.values, name=f"{slot} · {payload['weight_mode']} ({payload['n']})",
+            line=dict(width=2, color=color),
+        ))
+    st.markdown(f"**{T['scenario_compare_chart']}**")
+    st.plotly_chart(_minimal(fig_sc, 380), use_container_width=True)
+
+    sc_table = pd.DataFrame({
+        T["scenario_name"]: [
+            f"{slot} · {p['weight_mode']}" for slot, p in scenarios.items()
+        ],
+        T["kpi_ann"]: [round(p["ann_return"], 2) for p in scenarios.values()],
+        T["kpi_vol"]: [round(p["volatility"], 2) for p in scenarios.values()],
+        T["kpi_sharpe"]: [round(p["sharpe"], 2) for p in scenarios.values()],
+        T["kpi_dd"]: [round(p["max_dd"], 2) for p in scenarios.values()],
+    })
+    st.markdown(f"**{T['scenario_compare_table']}**")
+    st.dataframe(sc_table, use_container_width=True, hide_index=True)
 
 # Download
 st.markdown("---")
