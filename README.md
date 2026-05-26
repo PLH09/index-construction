@@ -12,6 +12,8 @@ license: mit
 
 # Index Construction
 
+🔗 **Live demo:** https://index-construction.streamlit.app
+
 A minimalist Streamlit dashboard for building and analyzing your own custom equity index.
 
 Pick any set of tickers, choose a weighting scheme, and instantly see index performance, component breakdown, and share-capital details. Bilingual (English / 中文).
@@ -27,10 +29,6 @@ Pick any set of tickers, choose a weighting scheme, and instantly see index perf
 - **CSV export** of prices and index series
 - **Bilingual UI** with one-click language toggle
 - **Warm minimalist design** — terracotta accent on cream background
-
-## Live demo
-
-Deploy free on [Streamlit Community Cloud](https://share.streamlit.io/) — connect this repo, point to `app.py`, done.
 
 ## Quick start (local)
 
