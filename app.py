@@ -50,6 +50,16 @@ TEXTS = {
         "kpi_ann": "年化報酬",
         "kpi_vol": "年化波動",
         "kpi_dd": "最大回撤",
+        "kpi_sharpe": "Sharpe",
+        "kpi_sortino": "Sortino",
+        "kpi_calmar": "Calmar",
+        "kpi_beta": "Beta",
+        "benchmark": "對標基準",
+        "benchmark_none": "無",
+        "rf_rate": "無風險利率 % (年化)",
+        "drawdown_title": "回撤分析 (Drawdown)",
+        "drawdown_caption": "顯示指數從歷史高點下跌的幅度。長期投資者的「最痛時刻」一覽。",
+        "vs_label": "vs",
         "chart_index": "指數走勢",
         "chart_components": "成分股表現 (歸一化 = 100)",
         "summary": "成分股摘要",
@@ -120,6 +130,16 @@ TEXTS = {
         "kpi_ann": "Annualized",
         "kpi_vol": "Annualized vol",
         "kpi_dd": "Max drawdown",
+        "kpi_sharpe": "Sharpe",
+        "kpi_sortino": "Sortino",
+        "kpi_calmar": "Calmar",
+        "kpi_beta": "Beta",
+        "benchmark": "Benchmark",
+        "benchmark_none": "None",
+        "rf_rate": "Risk-free rate % (annual)",
+        "drawdown_title": "Drawdown analysis",
+        "drawdown_caption": "How far the index has fallen from its rolling peak — the 'pain chart' every long-term investor should see.",
+        "vs_label": "vs",
         "chart_index": "Index performance",
         "chart_components": "Component performance (normalized = 100)",
         "summary": "Component summary",
@@ -219,6 +239,15 @@ with st.sidebar:
 L = "en" if lang == "English" else "zh"
 T = TEXTS[L]
 
+BENCHMARKS = {
+    "S&P 500": "^GSPC",
+    "NASDAQ": "^IXIC",
+    "Dow Jones": "^DJI",
+    "Russell 2000": "^RUT",
+    "MSCI World ETF (URTH)": "URTH",
+    "TAIEX": "^TWII",
+}
+
 PRESET_BASKETS = {
     "Magnificent 7": "AAPL, MSFT, GOOGL, AMZN, NVDA, META, TSLA",
     "FAANG": "META, AAPL, AMZN, NFLX, GOOGL",
@@ -279,6 +308,12 @@ with st.sidebar:
     end_date = c2.date_input(T["end"], value=today, max_value=today)
 
     base_value = st.number_input(T["base"], value=100, step=10)
+
+    st.markdown("---")
+    bench_options = [T["benchmark_none"]] + list(BENCHMARKS.keys())
+    bench_choice = st.selectbox(T["benchmark"], bench_options, index=1)  # S&P 500 default
+    benchmark_ticker = BENCHMARKS.get(bench_choice) if bench_choice != T["benchmark_none"] else None
+    rf_rate = st.number_input(T["rf_rate"], value=4.0, step=0.5, min_value=0.0, max_value=20.0) / 100
 
     st.markdown("")
     run = st.button(T["run"], use_container_width=True, type="primary")
@@ -341,6 +376,46 @@ def validate_tickers(tickers: tuple[str, ...]) -> dict[str, str | None]:
         except Exception:
             out[t] = None
     return out
+
+
+@st.cache_data(ttl=60 * 15, show_spinner=False)
+def fetch_benchmark(ticker: str, start: date, end: date) -> pd.Series:
+    """Fetch a single benchmark price series (close)."""
+    try:
+        d = yf.download(ticker, start=start, end=end + timedelta(days=1),
+                        auto_adjust=True, progress=False)
+        if d.empty:
+            return pd.Series(dtype=float)
+        col = d["Close"]
+        return col.iloc[:, 0] if isinstance(col, pd.DataFrame) else col
+    except Exception:
+        return pd.Series(dtype=float)
+
+
+def compute_metrics(index_series: pd.Series, benchmark: pd.Series | None, rf: float) -> dict:
+    """Compute Sharpe, Sortino, Calmar, Beta against benchmark."""
+    daily = index_series.pct_change().dropna()
+    ann_ret = ((index_series.iloc[-1] / index_series.iloc[0]) **
+               (365 / max((index_series.index[-1] - index_series.index[0]).days, 1)) - 1)
+    ann_vol = daily.std() * (252 ** 0.5)
+    downside = daily[daily < 0].std() * (252 ** 0.5)
+    max_dd = ((index_series / index_series.cummax()) - 1).min()
+
+    sharpe = (ann_ret - rf) / ann_vol if ann_vol > 0 else 0.0
+    sortino = (ann_ret - rf) / downside if downside > 0 else 0.0
+    calmar = ann_ret / abs(max_dd) if max_dd != 0 else 0.0
+
+    beta = None
+    if benchmark is not None and not benchmark.empty:
+        b_daily = benchmark.pct_change().reindex(daily.index).dropna()
+        common = daily.loc[b_daily.index]
+        if len(common) > 5 and b_daily.var() > 0:
+            beta = float(np.cov(common, b_daily, ddof=0)[0, 1] / b_daily.var())
+
+    return {
+        "sharpe": sharpe, "sortino": sortino, "calmar": calmar,
+        "beta": beta, "max_dd": max_dd * 100,
+    }
 
 
 def build_index(prices: pd.DataFrame, weights: dict[str, float], base: float) -> pd.Series:
@@ -439,6 +514,14 @@ else:
 
 index_series = build_index(prices, weights, base_value)
 
+# Fetch benchmark if requested
+benchmark_series = None
+if benchmark_ticker:
+    with st.spinner(f"{T['loading_prices']} ({bench_choice})"):
+        benchmark_series = fetch_benchmark(benchmark_ticker, start_date, end_date)
+    if benchmark_series.empty:
+        benchmark_series = None
+
 # KPIs
 start_val = index_series.iloc[0]
 end_val = index_series.iloc[-1]
@@ -447,14 +530,25 @@ days = (index_series.index[-1] - index_series.index[0]).days or 1
 ann_return = ((end_val / start_val) ** (365 / days) - 1) * 100
 daily_ret = index_series.pct_change().dropna()
 volatility = daily_ret.std() * (252 ** 0.5) * 100
-max_dd = ((index_series / index_series.cummax()) - 1).min() * 100
 
+metrics = compute_metrics(index_series, benchmark_series, rf_rate)
+max_dd = metrics["max_dd"]
+
+# Row 1 — returns + risk
 k1, k2, k3, k4, k5 = st.columns(5)
 k1.metric(T["kpi_value"], f"{end_val:,.2f}", f"{end_val - base_value:+.2f}")
 k2.metric(T["kpi_return"], f"{total_return:+.2f}%")
 k3.metric(T["kpi_ann"], f"{ann_return:+.2f}%")
 k4.metric(T["kpi_vol"], f"{volatility:.2f}%")
 k5.metric(T["kpi_dd"], f"{max_dd:.2f}%")
+
+# Row 2 — risk-adjusted ratios
+r1, r2, r3, r4 = st.columns(4)
+r1.metric(T["kpi_sharpe"], f"{metrics['sharpe']:.2f}")
+r2.metric(T["kpi_sortino"], f"{metrics['sortino']:.2f}")
+r3.metric(T["kpi_calmar"], f"{metrics['calmar']:.2f}")
+r4.metric(T["kpi_beta"], f"{metrics['beta']:.2f}" if metrics["beta"] is not None else "—",
+          help=f"{T['vs_label']} {bench_choice}" if benchmark_series is not None else "")
 
 # Helper for minimal plotly layout
 def _minimal(fig, height=380):
@@ -480,10 +574,43 @@ fig.add_trace(go.Scatter(
     line=dict(width=2.5, color=ACCENT), name="Index",
     fill="tozeroy", fillcolor="rgba(199,91,60,0.08)",
 ))
+# Benchmark overlay (normalized to same base)
+y_min, y_max = index_series.min(), index_series.max()
+if benchmark_series is not None and not benchmark_series.empty:
+    bench_norm = (benchmark_series / benchmark_series.iloc[0]) * base_value
+    fig.add_trace(go.Scatter(
+        x=bench_norm.index, y=bench_norm.values,
+        line=dict(width=1.8, color=INK, dash="dash"),
+        name=f"{T['vs_label']} {bench_choice}",
+    ))
+    y_min = min(y_min, bench_norm.min())
+    y_max = max(y_max, bench_norm.max())
+
 fig.add_hline(y=base_value, line_dash="dot", line_color=MUTED,
               annotation_text=f"{T['base_label']} {base_value}", annotation_font_color=MUTED)
-fig.update_yaxes(range=[min(index_series.min(), base_value) * 0.98, index_series.max() * 1.02])
+fig.update_yaxes(range=[min(y_min, base_value) * 0.98, y_max * 1.02])
 st.plotly_chart(_minimal(fig, 400), use_container_width=True)
+
+# Drawdown chart
+st.markdown(f"## {T['drawdown_title']}")
+st.markdown(f"<div class='caption'>{T['drawdown_caption']}</div>", unsafe_allow_html=True)
+dd_series = (index_series / index_series.cummax() - 1) * 100
+fig_dd = go.Figure()
+fig_dd.add_trace(go.Scatter(
+    x=dd_series.index, y=dd_series.values,
+    line=dict(width=1.5, color=ACCENT_DARK),
+    fill="tozeroy", fillcolor="rgba(158,68,41,0.18)",
+    name="Drawdown %",
+))
+if benchmark_series is not None and not benchmark_series.empty:
+    bench_dd = (benchmark_series / benchmark_series.cummax() - 1) * 100
+    fig_dd.add_trace(go.Scatter(
+        x=bench_dd.index, y=bench_dd.values,
+        line=dict(width=1.2, color=INK, dash="dash"),
+        name=f"{T['vs_label']} {bench_choice}",
+    ))
+fig_dd.update_yaxes(ticksuffix="%", range=[min(dd_series.min() * 1.1, -1), 0])
+st.plotly_chart(_minimal(fig_dd, 280), use_container_width=True)
 
 # Component chart
 st.markdown(f"## {T['chart_components']}")
