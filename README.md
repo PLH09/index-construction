@@ -1,3 +1,15 @@
+---
+title: Index Construction
+emoji: 📈
+colorFrom: red
+colorTo: yellow
+sdk: streamlit
+sdk_version: 1.39.0
+app_file: app.py
+pinned: false
+license: mit
+---
+
 # Index Construction
 
 A minimalist Streamlit dashboard for building and analyzing your own custom equity index.
