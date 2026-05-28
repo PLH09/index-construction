@@ -1,14 +1,12 @@
 """Index Construction Dashboard — minimalist, bilingual (中文 / English)."""
 from __future__ import annotations
 
-import re
 from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import requests
 import streamlit as st
 import yfinance as yf
 from sklearn.decomposition import PCA
@@ -76,8 +74,6 @@ TEXTS = {
         "col_total": "總股數",
         "col_float": "自由流通股數",
         "col_floatpct": "Float %",
-        "col_float_src": "資料來源",
-        "float_source_caption": "自由流通股數優先採用 Finviz（美股較權威）；台股 / 港股 / 抓不到 Finviz 時退回 yfinance。",
         "col_weight": "權重 %",
         "col_open": "起始價",
         "col_close": "最新價",
@@ -178,8 +174,6 @@ TEXTS = {
         "col_total": "Total shares",
         "col_float": "Free float",
         "col_floatpct": "Float %",
-        "col_float_src": "Float source",
-        "float_source_caption": "Free-float prefers Finviz (more authoritative for US listings); falls back to yfinance for non-US tickers (.TW, .HK, etc.) and when Finviz is unreachable.",
         "col_weight": "Weight %",
         "col_open": "Open",
         "col_close": "Last",
@@ -399,68 +393,6 @@ def fetch_prices(tickers: tuple[str, ...], start: date, end: date) -> pd.DataFra
     return pd.DataFrame(closes).dropna(how="all")
 
 
-_FINVIZ_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9",
-    "Accept-Language": "en-US,en;q=0.9",
-}
-
-# Layout (verified May 2026):
-# Shs Float</div></td><td class="snapshot-td2 …"><div class="snapshot-td-content"><b>14.67B</b></div>
-_FINVIZ_FLOAT_RE = re.compile(
-    r"Shs Float</div>.*?snapshot-td-content[^>]*>\s*<b>\s*([\d.,]+\s*[BMKT]?)",
-    re.IGNORECASE | re.DOTALL,
-)
-
-
-def _parse_human_number(s: str) -> float:
-    """Convert Finviz-style numbers like '16.42B', '450M', '-' to floats."""
-    if not s or s.strip() in ("-", ""):
-        return 0.0
-    s = s.strip().replace(",", "")
-    mult = {"B": 1e9, "M": 1e6, "K": 1e3, "T": 1e12}
-    if s[-1].upper() in mult:
-        try:
-            return float(s[:-1]) * mult[s[-1].upper()]
-        except ValueError:
-            return 0.0
-    try:
-        return float(s)
-    except ValueError:
-        return 0.0
-
-
-@st.cache_data(ttl=60 * 60 * 24, show_spinner=False)
-def fetch_finviz_float(ticker: str) -> float | None:
-    """Scrape the 'Shs Float' field from finviz.com.
-
-    Returns the float-shares count, or None if the page is not available
-    (network error, non-US ticker, rate-limit, layout change, etc.). Cached
-    for 24h since float counts rarely move intraday.
-    """
-    # Finviz only carries US-listed symbols. Tickers with a market suffix
-    # (.TW, .HK, .L, …) will 404, so skip the network call entirely.
-    if "." in ticker or "^" in ticker:
-        return None
-    try:
-        r = requests.get(
-            f"https://finviz.com/quote.ashx?t={ticker}",
-            headers=_FINVIZ_HEADERS, timeout=8,
-            allow_redirects=True,    # Finviz now 301s before serving the page
-        )
-        if r.status_code != 200 or not r.text:
-            return None
-        m = _FINVIZ_FLOAT_RE.search(r.text)
-        if not m:
-            return None
-        return _parse_human_number(m.group(1))
-    except Exception:
-        return None
-
-
 @st.cache_data(ttl=60 * 60, show_spinner=False)
 def fetch_share_info(tickers: tuple[str, ...]) -> pd.DataFrame:
     rows = []
@@ -483,15 +415,6 @@ def fetch_share_info(tickers: tuple[str, ...]) -> pd.DataFrame:
         cap_f = _f(cap)
         total_f = _f(total)
         float_f = _f(float_)
-
-        # Prefer Finviz for free-float when available (more authoritative for
-        # US-listed names). Falls back to the yfinance number otherwise.
-        finviz_float = fetch_finviz_float(t)
-        float_source = "yfinance"
-        if finviz_float and finviz_float > 0:
-            float_f = finviz_float
-            float_source = "finviz"
-
         rows.append({
             "Ticker": t,
             "Name": info.get("shortName") or info.get("longName") or t,
@@ -501,7 +424,6 @@ def fetch_share_info(tickers: tuple[str, ...]) -> pd.DataFrame:
             "TotalShares": total_f,
             "FloatShares": float_f,
             "FloatPct": (float_f / total_f * 100) if total_f > 0 else 0.0,
-            "FloatSource": float_source,
         })
     return pd.DataFrame(rows).set_index("Ticker")
 
@@ -881,7 +803,6 @@ shares_table = pd.DataFrame({
     T["col_total"]: share_info["TotalShares"].map(fmt_big),
     T["col_float"]: share_info["FloatShares"].map(fmt_big),
     T["col_floatpct"]: share_info["FloatPct"].round(2).astype(str),
-    T["col_float_src"]: share_info["FloatSource"].astype(str),
 }, index=share_info.index)
 
 total_cap = share_info["MarketCap"].sum()
@@ -891,10 +812,8 @@ shares_table.loc[T["total_row"]] = [
     "—", "—", "—",
     fmt_big(total_cap), fmt_big(total_shares_sum), fmt_big(total_float),
     f"{(total_float / total_shares_sum * 100):.2f}" if total_shares_sum else "0",
-    "—",
 ]
 st.dataframe(shares_table, use_container_width=True)
-st.caption(T["float_source_caption"])
 
 m1, m2, m3 = st.columns(3)
 m1.metric(T["m_cap"], fmt_big(total_cap))
