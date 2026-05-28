@@ -404,15 +404,26 @@ def fetch_share_info(tickers: tuple[str, ...]) -> pd.DataFrame:
         total = info.get("sharesOutstanding") or info.get("impliedSharesOutstanding") or 0
         float_ = info.get("floatShares") or 0
         cap = info.get("marketCap") or 0
+        # Defensive float-cast: pd.NA / None / NaN all collapse to 0 so the
+        # downstream weight math never propagates NaN
+        def _f(v):
+            try:
+                v = float(v) if v is not None else 0.0
+                return 0.0 if pd.isna(v) else v
+            except (TypeError, ValueError):
+                return 0.0
+        cap_f = _f(cap)
+        total_f = _f(total)
+        float_f = _f(float_)
         rows.append({
             "Ticker": t,
             "Name": info.get("shortName") or info.get("longName") or t,
-            "Currency": info.get("currency", ""),
-            "Sector": info.get("sector", ""),
-            "MarketCap": float(cap),
-            "TotalShares": float(total),
-            "FloatShares": float(float_),
-            "FloatPct": (float(float_) / float(total) * 100) if total else 0.0,
+            "Currency": info.get("currency", "") or "",
+            "Sector": info.get("sector", "") or "",
+            "MarketCap": cap_f,
+            "TotalShares": total_f,
+            "FloatShares": float_f,
+            "FloatPct": (float_f / total_f * 100) if total_f > 0 else 0.0,
         })
     return pd.DataFrame(rows).set_index("Ticker")
 
@@ -551,16 +562,27 @@ with st.spinner(T["loading_shares"]):
     share_info = fetch_share_info(tuple(prices.columns))
 
 # Weights
+def _safe_weights(raw: dict[str, float], cols) -> dict[str, float]:
+    """NaN-safe weight normalization. Treat missing values as 0; if every
+    weight ends up at 0 (e.g., Yahoo returned no caps), fall back to equal."""
+    cleaned = {t: (float(raw.get(t, 0)) if pd.notna(raw.get(t, 0)) else 0.0) for t in cols}
+    total = sum(cleaned.values())
+    if total <= 0:
+        return {t: 1 / len(cols) for t in cols}
+    return {t: cleaned[t] / total for t in cols}
+
+
 if weight_mode == "cap":
     caps = share_info["MarketCap"].to_dict()
-    total = sum(caps.values()) or 1
-    weights = {t: caps.get(t, 0) / total for t in prices.columns}
+    weights = _safe_weights(caps, prices.columns)
 elif weight_mode == "float":
     floats = share_info["FloatShares"].to_dict()
     last = prices.iloc[-1]
-    ff_cap = {t: floats.get(t, 0) * last[t] for t in prices.columns}
-    total = sum(ff_cap.values()) or 1
-    weights = {t: ff_cap[t] / total for t in prices.columns}
+    ff_cap = {
+        t: (floats.get(t, 0) or 0) * (last[t] if pd.notna(last[t]) else 0)
+        for t in prices.columns
+    }
+    weights = _safe_weights(ff_cap, prices.columns)
 elif weight_mode == "custom":
     # Render sliders inline. Default to equal weight per ticker.
     st.markdown(f"### {T['weight_custom']}")
