@@ -101,6 +101,7 @@ TEXTS = {
         "sector_title": "產業分布",
         "sector_caption": "依 Yahoo Finance 產業分類，看你的指數是否過度集中。",
         "sector_unknown": "未知",
+        "sector_unavailable": "Yahoo Finance 暫時無法提供產業分類資料（通常是 rate-limit），請稍候重試。",
         "corr_title": "成分股相關係數",
         "corr_caption": "日報酬之間的相關係數。深色 = 高相關（同向動）；淺色 = 真正分散。",
         "scenarios_title": "情境比較 (Scenarios)",
@@ -201,6 +202,7 @@ TEXTS = {
         "sector_title": "Sector breakdown",
         "sector_caption": "Yahoo Finance sector classification — spot if your index is concentrated.",
         "sector_unknown": "Unknown",
+        "sector_unavailable": "Sector data is temporarily unavailable from Yahoo Finance (usually a rate-limit). Try again in a moment.",
         "corr_title": "Component correlations",
         "corr_caption": "Pairwise correlation of daily returns. Dark = highly correlated (move together); light = genuine diversification.",
         "scenarios_title": "Scenario comparison",
@@ -763,35 +765,48 @@ st.markdown(f"<div class='caption'>{T['sector_caption']}</div>", unsafe_allow_ht
 
 sector_weights: dict[str, float] = {}
 for t in prices.columns:
-    sec = share_info.loc[t, "Sector"] or T["sector_unknown"]
+    raw_sec = share_info.loc[t, "Sector"] if "Sector" in share_info.columns else ""
+    sec = str(raw_sec).strip() or T["sector_unknown"]
     sector_weights[sec] = sector_weights.get(sec, 0) + weights[t]
 
-sec_col1, sec_col2 = st.columns([1.1, 1])
-with sec_col1:
-    sec_pie = px.pie(
-        values=list(sector_weights.values()), names=list(sector_weights.keys()),
-        hole=0.5, color_discrete_sequence=PALETTE,
-    )
-    sec_pie.update_traces(
-        textposition="outside", textinfo="label+percent",
-        marker=dict(line=dict(color=BG, width=2)),
-        sort=False,
-    )
-    # Force a square canvas so the donut stays perfectly round
-    sec_pie.update_layout(
-        height=440, width=440, autosize=False,
-        margin=dict(l=20, r=20, t=20, b=20),
-        plot_bgcolor=BG, paper_bgcolor=BG,
-        font=dict(family="-apple-system, sans-serif", size=12, color=INK),
-        showlegend=False,
-    )
-    st.plotly_chart(sec_pie, use_container_width=False)
-with sec_col2:
-    sec_df = (pd.DataFrame({
-        T["sector_title"]: list(sector_weights.keys()),
-        T["col_weight"]: [round(v * 100, 2) for v in sector_weights.values()],
-    }).sort_values(T["col_weight"], ascending=False).reset_index(drop=True))
-    st.dataframe(sec_df, use_container_width=True, height=320, hide_index=True)
+# If every ticker bucketed into Unknown (yfinance rate-limit on the live site
+# often returns empty sector strings), the resulting one-slice pie looks
+# broken — show a clearer message instead.
+all_unknown = (
+    len(sector_weights) == 1
+    and next(iter(sector_weights.keys())) == T["sector_unknown"]
+)
+
+if all_unknown:
+    st.info(T["sector_unavailable"])
+else:
+    sec_col1, sec_col2 = st.columns([1.2, 1])
+    with sec_col1:
+        sec_pie = px.pie(
+            values=list(sector_weights.values()), names=list(sector_weights.keys()),
+            hole=0.5, color_discrete_sequence=PALETTE,
+        )
+        sec_pie.update_traces(
+            textposition="outside", textinfo="label+percent",
+            marker=dict(line=dict(color=BG, width=2)),
+            sort=False,
+        )
+        # use_container_width=True so the donut always fits its column on any
+        # viewport; equal-aspect is enforced by a fixed height + no width.
+        sec_pie.update_layout(
+            height=420,
+            margin=dict(l=20, r=20, t=20, b=20),
+            plot_bgcolor=BG, paper_bgcolor=BG,
+            font=dict(family="-apple-system, sans-serif", size=12, color=INK),
+            showlegend=False,
+        )
+        st.plotly_chart(sec_pie, use_container_width=True)
+    with sec_col2:
+        sec_df = (pd.DataFrame({
+            T["sector_title"]: list(sector_weights.keys()),
+            T["col_weight"]: [round(v * 100, 2) for v in sector_weights.values()],
+        }).sort_values(T["col_weight"], ascending=False).reset_index(drop=True))
+        st.dataframe(sec_df, use_container_width=True, height=320, hide_index=True)
 
 # Shares
 st.markdown(f"## {T['shares']}")
