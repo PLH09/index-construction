@@ -365,17 +365,31 @@ with st.sidebar:
 # ---------------- Data ----------------
 @st.cache_data(ttl=60 * 15, show_spinner=False)
 def fetch_prices(tickers: tuple[str, ...], start: date, end: date) -> pd.DataFrame:
-    data = yf.download(
-        list(tickers),
-        start=start,
-        end=end + timedelta(days=1),
-        auto_adjust=True,
-        progress=False,
-        group_by="ticker",
-    )
+    try:
+        data = yf.download(
+            list(tickers),
+            start=start,
+            end=end + timedelta(days=1),
+            auto_adjust=True,
+            progress=False,
+            group_by="ticker",
+            threads=False,           # parallel threads can trip Cloudflare
+        )
+    except Exception:
+        return pd.DataFrame()
+    if data is None or data.empty:
+        return pd.DataFrame()
     if len(tickers) == 1:
-        return pd.DataFrame({tickers[0]: data["Close"]})
-    closes = {t: data[t]["Close"] for t in tickers if t in data.columns.levels[0]}
+        col = data["Close"] if "Close" in data.columns else data.get(tickers[0], pd.Series())
+        return pd.DataFrame({tickers[0]: col})
+    closes: dict[str, pd.Series] = {}
+    top = data.columns.levels[0] if hasattr(data.columns, "levels") else []
+    for t in tickers:
+        if t in top:
+            try:
+                closes[t] = data[t]["Close"]
+            except Exception:
+                continue
     return pd.DataFrame(closes).dropna(how="all")
 
 
@@ -403,22 +417,26 @@ def fetch_share_info(tickers: tuple[str, ...]) -> pd.DataFrame:
     return pd.DataFrame(rows).set_index("Ticker")
 
 
-@st.cache_data(ttl=60 * 60 * 24, show_spinner=False)
+@st.cache_data(ttl=60 * 60 * 6, show_spinner=False)
 def validate_tickers(tickers: tuple[str, ...]) -> dict[str, str | None]:
-    """Return {ticker: company_name or None if invalid}."""
+    """Best-effort company-name lookup. Never marks a ticker as invalid just
+    because a metadata call rate-limited — the real source of truth is whether
+    fetch_prices returns data, so we keep this purely informational."""
     out: dict[str, str | None] = {}
     for t in tickers:
+        name: str | None = None
+        # Try .info first; if it 404s or comes back empty, the ticker is likely
+        # bogus. Network/rate-limit errors are silently tolerated so the chip
+        # falls back to showing just the ticker symbol.
         try:
-            fi = yf.Ticker(t).fast_info
-            # fast_info hits a lighter endpoint — fall back to .info if it's empty
-            price = getattr(fi, "last_price", None)
-            if price:
-                info = yf.Ticker(t).info
-                out[t] = info.get("shortName") or info.get("longName") or t
-            else:
-                out[t] = None
+            info = yf.Ticker(t).info or {}
+            name = info.get("shortName") or info.get("longName")
+            # An explicit Yahoo 404 surfaces as quoteType being None / missing
+            if not name and not info.get("quoteType"):
+                name = None
         except Exception:
-            out[t] = None
+            name = None
+        out[t] = name
     return out
 
 
@@ -489,26 +507,20 @@ if not tickers:
 
 
 def _render_chips(valid_map: dict[str, str | None]):
-    """Render validation chips: green for valid, red for invalid."""
-    valid_items = [(k, v) for k, v in valid_map.items() if v]
-    invalid = [k for k, v in valid_map.items() if not v]
-
+    """Render informational chips. A missing name just means metadata wasn't
+    available (often rate-limit) — we still try to fetch prices for it."""
     chips_html = ""
-    for tk, name in valid_items:
+    for tk, name in valid_map.items():
+        label = (
+            f"<b>{tk}</b> · <span style='color:{MUTED}'>{name}</span>"
+            if name else f"<b>{tk}</b>"
+        )
         chips_html += (
             f"<span style='display:inline-block; background:{CARD}; border:1px solid {ACCENT}; "
             f"color:{ACCENT}; padding:4px 10px; border-radius:14px; margin:3px 4px 3px 0; "
-            f"font-size:0.82rem;'>✓ <b>{tk}</b> · <span style='color:{MUTED}'>{name}</span></span>"
-        )
-    for tk in invalid:
-        chips_html += (
-            f"<span style='display:inline-block; background:#FBEEE7; border:1px solid #D88A6B; "
-            f"color:#9E4429; padding:4px 10px; border-radius:14px; margin:3px 4px 3px 0; "
-            f"font-size:0.82rem;'>✗ <b>{tk}</b></span>"
+            f"font-size:0.82rem;'>{label}</span>"
         )
     st.markdown(chips_html, unsafe_allow_html=True)
-    if invalid:
-        st.caption(f"{T['invalid_tickers']}: {', '.join(invalid)}")
 
 
 if not run and "loaded" not in st.session_state:
@@ -516,15 +528,12 @@ if not run and "loaded" not in st.session_state:
     st.stop()
 st.session_state["loaded"] = True
 
-# Quick validation as a chip strip above the dashboard
+# Show informational chips, but DON'T filter — fetch_prices is the real
+# source of truth. Yahoo's metadata endpoint rate-limits frequently on
+# Streamlit Cloud and was producing false negatives that dropped every ticker.
 with st.spinner(T["validating"]):
     valid_map = validate_tickers(tickers)
 _render_chips(valid_map)
-# Filter to valid only before fetching
-tickers = tuple(t for t, name in valid_map.items() if name)
-if not tickers:
-    st.error(T["no_data"])
-    st.stop()
 
 with st.spinner(T["loading_prices"]):
     prices = fetch_prices(tickers, start_date, end_date)
