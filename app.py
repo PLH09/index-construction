@@ -942,28 +942,33 @@ dl1.download_button(
 )
 
 with dl2:
-    with st.spinner(T["pdf_generating"]):
-        pdf_bytes = generate_pdf_report(
-            index_series=index_series,
-            benchmark=benchmark_series,
-            bench_label=bench_choice if benchmark_series is not None else "—",
-            base_value=base_value,
-            weights=weights,
-            share_info=share_info,
-            prices=prices,
-            sector_weights=sector_weights,
-            metrics=metrics,
-            weight_mode_label=weight_choice,
-            period=(start_date, end_date),
-            pca_explained=pca_explained_for_pdf,
-            lang=L,
+    # Defer PDF generation to a button click — generating it on every rerun
+    # ran matplotlib + reportlab unnecessarily and was tipping the free
+    # Streamlit Cloud instance over its memory budget.
+    if st.button(T["pdf_download"], use_container_width=True, key="gen_pdf"):
+        with st.spinner(T["pdf_generating"]):
+            pdf_bytes = generate_pdf_report(
+                index_series=index_series,
+                benchmark=benchmark_series,
+                bench_label=bench_choice if benchmark_series is not None else "—",
+                base_value=base_value,
+                weights=weights,
+                share_info=share_info,
+                prices=prices,
+                sector_weights=sector_weights,
+                metrics=metrics,
+                weight_mode_label=weight_choice,
+                period=(start_date, end_date),
+                pca_explained=pca_explained_for_pdf,
+                lang=L,
+            )
+        st.download_button(
+            T["pdf_download"],
+            pdf_bytes,
+            file_name=f"index_construction_{start_date}_{end_date}_{L}.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+            key="dl_pdf",
         )
-    st.download_button(
-        T["pdf_download"],
-        pdf_bytes,
-        file_name=f"index_construction_{start_date}_{end_date}_{L}.pdf",
-        mime="application/pdf",
-        use_container_width=True,
-    )
 
 st.caption(T["pdf_note"])
