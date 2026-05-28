@@ -395,6 +395,46 @@ def fetch_prices(tickers: tuple[str, ...], start: date, end: date) -> pd.DataFra
     return pd.DataFrame(closes).dropna(how="all")
 
 
+# Sector fallback table — used when yfinance .info gets rate-limited on
+# Streamlit Cloud. Covers all preset-basket tickers + popular S&P 500 names.
+KNOWN_SECTORS = {
+    # Mag 7 / FAANG
+    "AAPL": "Technology", "MSFT": "Technology", "GOOGL": "Communication Services",
+    "GOOG": "Communication Services", "AMZN": "Consumer Cyclical",
+    "NVDA": "Technology", "META": "Communication Services", "TSLA": "Consumer Cyclical",
+    "NFLX": "Communication Services",
+    # Semis
+    "TSM": "Technology", "AVGO": "Technology", "AMD": "Technology", "INTC": "Technology",
+    "QCOM": "Technology", "ASML": "Technology", "MU": "Technology", "TXN": "Technology",
+    "AMAT": "Technology", "LRCX": "Technology", "MRVL": "Technology",
+    # Cloud / SaaS
+    "CRM": "Technology", "NOW": "Technology", "SNOW": "Technology", "DDOG": "Technology",
+    "NET": "Technology", "ORCL": "Technology", "ADBE": "Technology", "SAP": "Technology",
+    # EV & Auto
+    "F": "Consumer Cyclical", "GM": "Consumer Cyclical", "RIVN": "Consumer Cyclical",
+    "LCID": "Consumer Cyclical", "NIO": "Consumer Cyclical", "BYD": "Consumer Cyclical",
+    "TM": "Consumer Cyclical",
+    # Dow Jones top names
+    "V": "Financial Services", "MA": "Financial Services", "JPM": "Financial Services",
+    "BAC": "Financial Services", "WFC": "Financial Services", "GS": "Financial Services",
+    "MS": "Financial Services", "BLK": "Financial Services", "BRK-B": "Financial Services",
+    "UNH": "Healthcare", "JNJ": "Healthcare", "PFE": "Healthcare", "LLY": "Healthcare",
+    "ABBV": "Healthcare", "MRK": "Healthcare", "TMO": "Healthcare", "ABT": "Healthcare",
+    "WMT": "Consumer Defensive", "PG": "Consumer Defensive", "KO": "Consumer Defensive",
+    "PEP": "Consumer Defensive", "COST": "Consumer Defensive",
+    "HD": "Consumer Cyclical", "MCD": "Consumer Cyclical", "NKE": "Consumer Cyclical",
+    "SBUX": "Consumer Cyclical", "DIS": "Communication Services",
+    "XOM": "Energy", "CVX": "Energy", "COP": "Energy", "SLB": "Energy", "OXY": "Energy",
+    # China ADRs
+    "BABA": "Consumer Cyclical", "PDD": "Consumer Cyclical", "JD": "Consumer Cyclical",
+    "BIDU": "Communication Services", "NTES": "Communication Services",
+    "TCEHY": "Communication Services",
+    # Taiwan (yfinance Sector is usually fine for .TW, but defensive)
+    "2330.TW": "Technology", "2454.TW": "Technology", "2317.TW": "Technology",
+    "2308.TW": "Technology", "2382.TW": "Technology", "2303.TW": "Technology",
+}
+
+
 @st.cache_data(ttl=60 * 60, show_spinner=False)
 def fetch_share_info(tickers: tuple[str, ...]) -> pd.DataFrame:
     rows = []
@@ -417,11 +457,17 @@ def fetch_share_info(tickers: tuple[str, ...]) -> pd.DataFrame:
         cap_f = _f(cap)
         total_f = _f(total)
         float_f = _f(float_)
+        # Sector: yfinance first, fall back to the bundled table when Yahoo
+        # rate-limits (very common on Streamlit Cloud).
+        sector = (info.get("sector") or "").strip()
+        if not sector:
+            sector = KNOWN_SECTORS.get(t.upper(), "")
+
         rows.append({
             "Ticker": t,
             "Name": info.get("shortName") or info.get("longName") or t,
             "Currency": info.get("currency", "") or "",
-            "Sector": info.get("sector", "") or "",
+            "Sector": sector,
             "MarketCap": cap_f,
             "TotalShares": total_f,
             "FloatShares": float_f,
