@@ -439,13 +439,39 @@ KNOWN_SECTORS = {
 def fetch_share_info(tickers: tuple[str, ...]) -> pd.DataFrame:
     rows = []
     for t in tickers:
+        info: dict = {}
+        fast = None
         try:
-            info = yf.Ticker(t).info
+            tk = yf.Ticker(t)
+            info = tk.info or {}
+            try:
+                fast = tk.fast_info
+            except Exception:
+                fast = None
         except Exception:
-            info = {}
-        total = info.get("sharesOutstanding") or info.get("impliedSharesOutstanding") or 0
-        float_ = info.get("floatShares") or 0
-        cap = info.get("marketCap") or 0
+            pass
+
+        total = (
+            info.get("sharesOutstanding")
+            or info.get("impliedSharesOutstanding")
+            or (getattr(fast, "shares", None) if fast else None)
+            or 0
+        )
+        # Fallback chain for free float: floatShares → sharesOutstanding minus
+        # insider holdings → sharesOutstanding itself (close enough for the
+        # big-cap names where insider % is small).
+        float_ = info.get("floatShares")
+        if not float_:
+            insider_pct = info.get("heldPercentInsiders") or 0
+            if total and 0 <= insider_pct < 1:
+                float_ = total * (1 - insider_pct)
+            else:
+                float_ = total       # last-resort: assume fully floating
+        cap = (
+            info.get("marketCap")
+            or (getattr(fast, "market_cap", None) if fast else None)
+            or 0
+        )
         # Defensive float-cast: pd.NA / None / NaN all collapse to 0 so the
         # downstream weight math never propagates NaN
         def _f(v):
@@ -471,7 +497,10 @@ def fetch_share_info(tickers: tuple[str, ...]) -> pd.DataFrame:
             "MarketCap": cap_f,
             "TotalShares": total_f,
             "FloatShares": float_f,
-            "FloatPct": (float_f / total_f * 100) if total_f > 0 else 0.0,
+            # Cap at 100% — dual-class share names (e.g. GOOG/GOOGL) sometimes
+            # have floatShares counting all classes while sharesOutstanding
+            # counts only one, producing nonsense >100% values.
+            "FloatPct": min(100.0, (float_f / total_f * 100)) if total_f > 0 else 0.0,
         })
     return pd.DataFrame(rows).set_index("Ticker")
 
