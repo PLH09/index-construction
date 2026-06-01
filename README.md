@@ -12,7 +12,9 @@ license: mit
 
 # Index Construction
 
-🔗 **Live demo:** https://index-construction.streamlit.app
+🔗 **Live demos**
+- Hugging Face Spaces (primary, recommended): https://huggingface.co/spaces/Paulineeeeeee/index-construction
+- Streamlit Cloud (mirror): https://index-construction.streamlit.app
 
 A minimalist Streamlit dashboard for building and analyzing your own custom equity index.
 
