@@ -60,11 +60,6 @@ TEXTS = {
         "benchmark": "對標基準",
         "benchmark_none": "無",
         "rf_rate": "無風險利率 % (年化)",
-        "rf_source": "無風險利率來源",
-        "rf_manual": "手動輸入",
-        "rf_fetching": "從 FRED 抓取利率中…",
-        "rf_from_fred": "✓ 無風險利率採用 FRED {series}：{rate:.2f}%",
-        "rf_fred_failed": "⚠ FRED 抓取失敗，改用手動值 {rate:.2f}%",
         "drawdown_title": "回撤分析 (Drawdown)",
         "drawdown_caption": "顯示指數從歷史高點下跌的幅度。長期投資者的「最痛時刻」一覽。",
         "vs_label": "vs",
@@ -166,11 +161,6 @@ TEXTS = {
         "benchmark": "Benchmark",
         "benchmark_none": "None",
         "rf_rate": "Risk-free rate % (annual)",
-        "rf_source": "Risk-free rate source",
-        "rf_manual": "Manual",
-        "rf_fetching": "Fetching rate from FRED…",
-        "rf_from_fred": "✓ Risk-free rate from FRED {series}: {rate:.2f}%",
-        "rf_fred_failed": "⚠ FRED fetch failed, using manual value {rate:.2f}%",
         "drawdown_title": "Drawdown analysis",
         "drawdown_caption": "How far the index has fallen from its rolling peak — the 'pain chart' every long-term investor should see.",
         "vs_label": "vs",
@@ -303,13 +293,6 @@ BENCHMARKS = {
     "TAIEX": "^TWII",
 }
 
-# FRED Treasury constant-maturity series usable as the risk-free proxy.
-FRED_SERIES = {
-    "3-Month T-Bill (DGS3MO)": "DGS3MO",
-    "1-Year Treasury (DGS1)": "DGS1",
-    "2-Year Treasury (DGS2)": "DGS2",
-    "10-Year Treasury (DGS10)": "DGS10",
-}
 
 PRESET_BASKETS = {
     "Magnificent 7": "AAPL, MSFT, GOOGL, AMZN, NVDA, META, TSLA",
@@ -378,13 +361,9 @@ with st.sidebar:
     bench_choice = st.selectbox(T["benchmark"], bench_options, index=1)  # S&P 500 default
     benchmark_ticker = BENCHMARKS.get(bench_choice) if bench_choice != T["benchmark_none"] else None
 
-    # Risk-free rate: manual, or auto-fetched from FRED Treasury series.
-    rf_options = [T["rf_manual"]] + list(FRED_SERIES.keys())
-    rf_source = st.selectbox(T["rf_source"], rf_options, index=1)  # default DGS3MO
-    rf_manual = st.number_input(
+    rf_rate = st.number_input(
         T["rf_rate"], value=4.0, step=0.5, min_value=0.0, max_value=20.0,
-    )
-    # Actual rf_rate is resolved later (after fetch_fred_rate is defined).
+    ) / 100
 
     st.markdown("")
     run = st.button(T["run"], use_container_width=True, type="primary")
@@ -572,54 +551,6 @@ def validate_tickers(tickers: tuple[str, ...]) -> dict[str, str | None]:
     return out
 
 
-@st.cache_data(ttl=60 * 60 * 6, show_spinner=False)
-def fetch_fred_rate(series_id: str) -> float | None:
-    """Return the latest value of a FRED series as a percent (e.g. 4.32).
-
-    Two-path strategy:
-      1. No-key CSV endpoint (fredgraph.csv) — works on most networks.
-      2. Official JSON API with FRED_API_KEY from st.secrets — fallback for
-         networks where the CSV host is blocked.
-    Returns None if both fail, so the caller can fall back to manual input.
-    """
-    import requests
-
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; IndexConstruction/1.0)"}
-
-    # Path 1 — no API key needed
-    try:
-        url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
-        r = requests.get(url, headers=headers, timeout=10)
-        if r.status_code == 200 and r.text:
-            df = pd.read_csv(pd.io.common.StringIO(r.text))
-            vals = pd.to_numeric(df.iloc[:, 1], errors="coerce").dropna()
-            if len(vals):
-                return float(vals.iloc[-1])
-    except Exception:
-        pass
-
-    # Path 2 — official API (requires a free key in secrets)
-    try:
-        api_key = st.secrets.get("FRED_API_KEY", "")
-    except Exception:
-        api_key = ""
-    if api_key:
-        try:
-            url = (
-                "https://api.stlouisfed.org/fred/series/observations"
-                f"?series_id={series_id}&api_key={api_key}&file_type=json"
-                "&sort_order=desc&limit=10"
-            )
-            r = requests.get(url, headers=headers, timeout=10)
-            if r.status_code == 200:
-                for obs in r.json().get("observations", []):
-                    if obs.get("value") not in (".", "", None):
-                        return float(obs["value"])
-        except Exception:
-            pass
-    return None
-
-
 @st.cache_data(ttl=60 * 15, show_spinner=False)
 def fetch_benchmark(ticker: str, start: date, end: date) -> pd.Series:
     """Fetch a single benchmark price series (close)."""
@@ -797,19 +728,6 @@ if benchmark_ticker:
         benchmark_series = fetch_benchmark(benchmark_ticker, start_date, end_date)
     if benchmark_series.empty:
         benchmark_series = None
-
-# Resolve the risk-free rate: manual input, or auto-fetched from FRED.
-if rf_source == T["rf_manual"]:
-    rf_rate = rf_manual / 100
-else:
-    with st.spinner(T["rf_fetching"]):
-        fred_val = fetch_fred_rate(FRED_SERIES[rf_source])
-    if fred_val is not None:
-        rf_rate = fred_val / 100
-        st.caption(T["rf_from_fred"].format(series=rf_source, rate=fred_val))
-    else:
-        rf_rate = rf_manual / 100
-        st.caption(T["rf_fred_failed"].format(rate=rf_manual))
 
 # KPIs
 start_val = index_series.iloc[0]
