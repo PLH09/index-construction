@@ -1,6 +1,7 @@
 """Index Construction Dashboard — minimalist, bilingual (中文 / English)."""
 from __future__ import annotations
 
+import time
 from datetime import date, timedelta
 
 import numpy as np
@@ -437,24 +438,42 @@ KNOWN_SECTORS = {
 
 @st.cache_data(ttl=60 * 60, show_spinner=False)
 def fetch_share_info(tickers: tuple[str, ...]) -> pd.DataFrame:
+    def _fast_get(fast, key):
+        """fast_info is dict-like with camelCase keys; tolerate either style."""
+        if fast is None:
+            return None
+        try:
+            return fast.get(key)
+        except Exception:
+            return getattr(fast, key, None)
+
     rows = []
     for t in tickers:
         info: dict = {}
         fast = None
-        try:
-            tk = yf.Ticker(t)
-            info = tk.info or {}
+        tk = yf.Ticker(t)
+        # .info is the scraping endpoint and routinely fails the FIRST call on
+        # cloud egress IPs (rate-limit / Cloudflare). Retry a few times before
+        # giving up — this is the single biggest cause of blank Free Float.
+        for attempt in range(3):
             try:
-                fast = tk.fast_info
+                info = tk.info or {}
+                if info.get("floatShares") or info.get("sharesOutstanding"):
+                    break
             except Exception:
-                fast = None
+                info = info or {}
+            time.sleep(0.4 * (attempt + 1))
+        # fast_info uses the lightweight quote endpoint — far more reliable
+        # under rate-limiting; our guaranteed backstop for shares + market cap.
+        try:
+            fast = tk.fast_info
         except Exception:
-            pass
+            fast = None
 
         total = (
             info.get("sharesOutstanding")
             or info.get("impliedSharesOutstanding")
-            or (getattr(fast, "shares", None) if fast else None)
+            or _fast_get(fast, "shares")
             or 0
         )
         # Fallback chain for free float: floatShares → sharesOutstanding minus
@@ -469,7 +488,7 @@ def fetch_share_info(tickers: tuple[str, ...]) -> pd.DataFrame:
                 float_ = total       # last-resort: assume fully floating
         cap = (
             info.get("marketCap")
-            or (getattr(fast, "market_cap", None) if fast else None)
+            or _fast_get(fast, "marketCap")
             or 0
         )
         # Defensive float-cast: pd.NA / None / NaN all collapse to 0 so the
