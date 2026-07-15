@@ -17,19 +17,19 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from reportlab.lib.colors import HexColor
-from reportlab.lib.enums import TA_JUSTIFY, TA_LEFT
+from reportlab.lib.enums import TA_LEFT
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import cm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (
-    Image, KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer,
+    Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer,
     Table, TableStyle,
 )
 
-# Match the dashboard's terracotta theme
+# Match the dashboard's terracotta theme (keep in sync with app.py)
 ACCENT = "#C75B3C"
 ACCENT_DARK = "#9E4429"
 INK = "#3D2B1F"
@@ -38,6 +38,9 @@ LINE = "#EDE3D6"
 BG = "#FBF6F0"
 CARD = "#FFFFFF"
 CALLOUT_BG = "#FBEEE7"
+# Same 7-color categorical palette as app.py's PALETTE so the PDF donut and
+# the dashboard donut color the same sector identically.
+PALETTE = ["#C75B3C", "#3D2B1F", "#D9A679", "#8A7968", "#6B4F3A", "#E8C39E", "#A0522D"]
 
 
 # ---------- Font setup (run once per process) ----------
@@ -263,7 +266,7 @@ TXT = {
 
 
 # ---------- chart helpers ----------
-def _style_axes(ax, lang: str):
+def _style_axes(ax):
     ax.set_facecolor(BG)
     for s in ("top", "right"):
         ax.spines[s].set_visible(False)
@@ -293,7 +296,7 @@ def _index_chart(index_series, benchmark, base, bench_label, t):
     ax.axhline(base, color=MUTED, linestyle=":", linewidth=0.8)
     ax.legend(loc="best", frameon=False, fontsize=8)
     ax.set_title(t["title_perf_chart"], loc="left", fontsize=12, weight="medium", pad=12)
-    _style_axes(ax, "")
+    _style_axes(ax)
     return _fig_to_buf(fig)
 
 
@@ -308,18 +311,19 @@ def _drawdown_chart(index_series, benchmark, bench_label, t):
         ax.legend(loc="lower left", frameon=False, fontsize=7)
     ax.axhline(0, color=LINE, linewidth=0.8)
     ax.set_title(t["title_dd_chart"], loc="left", fontsize=12, weight="medium", pad=12)
-    _style_axes(ax, "")
+    _style_axes(ax)
     return _fig_to_buf(fig)
 
 
 def _sector_chart(sector_weights, t):
     # Square figure so the donut renders as a perfect circle, not an oval
     fig, ax = plt.subplots(figsize=(6.0, 6.0))
-    palette = ["#C75B3C", "#3D2B1F", "#D9A679", "#8A7968", "#6B4F3A", "#E8C39E", "#A0522D", "#B07B5A"]
     labels = list(sector_weights.keys())
     values = list(sector_weights.values())
+    # Cycle the shared PALETTE the same way Plotly does on the dashboard.
+    colors = [PALETTE[i % len(PALETTE)] for i in range(len(labels))]
     wedges, texts, autotexts = ax.pie(
-        values, labels=labels, colors=palette[:len(labels)],
+        values, labels=labels, colors=colors,
         autopct="%1.0f%%",
         startangle=90, counterclock=False,
         pctdistance=0.78, labeldistance=1.08,
@@ -586,8 +590,9 @@ def generate_pdf_report(
     rows = [[t["col_ticker"], t["col_name"], t["col_sector"], t["col_weight"], t["col_cap"]]]
 
     def _fmt_big(n):
-        if not n: return "—"
-        for unit, div in [("T", 1e12), ("B", 1e9), ("M", 1e6)]:
+        # Same tiers as app.py fmt_big (incl. K) so dashboard and PDF agree.
+        if not n or pd.isna(n): return "—"
+        for unit, div in [("T", 1e12), ("B", 1e9), ("M", 1e6), ("K", 1e3)]:
             if abs(n) >= div: return f"{n / div:,.2f}{unit}"
         return f"{n:,.0f}"
 

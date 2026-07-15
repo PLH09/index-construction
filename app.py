@@ -26,17 +26,12 @@ TEXTS = {
         "preset_custom": "自訂",
         "tickers": "股票代碼",
         "tickers_help": "用逗號分隔。例：AAPL, MSFT, 2330.TW",
-        "validate": "驗證代碼",
-        "validating": "驗證中…",
-        "valid_tickers": "有效代碼",
-        "invalid_tickers": "查無資料",
         "weight": "權重方式",
         "weight_equal": "等權重",
         "weight_cap": "市值加權",
         "weight_float": "自由流通市值",
         "period": "期間",
         "preset": "快速選擇",
-        "custom": "自訂",
         "presets": ["自訂", "1 個月", "3 個月", "6 個月", "年初至今", "1 年", "3 年", "5 年"],
         "start": "起始日",
         "end": "結束日",
@@ -48,6 +43,8 @@ TEXTS = {
         "loading_shares": "讀取股本資訊中…",
         "missing": "查無資料的代碼",
         "no_data": "沒有可用的股價資料，請檢查代碼或日期",
+        "window_truncated": "⚠ 因 {ticker} 上市較晚，回測窗口實際從 {start} 開始（早於此日期的資料已被排除）",
+        "fx_missing": "⚠ 無法取得 {ccys} 兌美元匯率，市值/自由流通權重可能失真（未換匯直接加總）",
         "kpi_value": "指數現值",
         "kpi_return": "區間報酬",
         "kpi_ann": "年化報酬",
@@ -127,17 +124,12 @@ TEXTS = {
         "preset_custom": "Custom",
         "tickers": "Tickers",
         "tickers_help": "Comma-separated. e.g. AAPL, MSFT, 2330.TW",
-        "validate": "Validate tickers",
-        "validating": "Validating…",
-        "valid_tickers": "Valid",
-        "invalid_tickers": "Not found",
         "weight": "Weighting",
         "weight_equal": "Equal weight",
         "weight_cap": "Market cap",
         "weight_float": "Free float",
         "period": "Period",
         "preset": "Quick select",
-        "custom": "Custom",
         "presets": ["Custom", "1 Month", "3 Months", "6 Months", "YTD", "1 Year", "3 Years", "5 Years"],
         "start": "Start",
         "end": "End",
@@ -149,6 +141,8 @@ TEXTS = {
         "loading_shares": "Fetching share info…",
         "missing": "Tickers with no data",
         "no_data": "No price data available — check tickers or date range",
+        "window_truncated": "⚠ Window starts {start} because {ticker} listed later — earlier rows were dropped",
+        "fx_missing": "⚠ No USD FX rate for {ccys}; cap/float weights may be distorted (summed without conversion)",
         "kpi_value": "Index value",
         "kpi_return": "Period return",
         "kpi_ann": "Annualized",
@@ -299,7 +293,9 @@ PRESET_BASKETS = {
     "FAANG": "META, AAPL, AMZN, NFLX, GOOGL",
     "Semiconductors": "NVDA, TSM, AVGO, AMD, INTC, QCOM, ASML, MU",
     "Cloud / SaaS": "MSFT, CRM, NOW, SNOW, DDOG, NET, ORCL",
-    "EV & Battery": "TSLA, BYD, RIVN, LCID, NIO, F, GM",
+    # Note: BYD Company on Yahoo is BYDDY (ADR) / 1211.HK — bare "BYD" is
+    # Boyd Gaming Corporation, a casino operator.
+    "EV & Battery": "TSLA, BYDDY, RIVN, LCID, NIO, F, GM",
     "Taiwan Top Tech": "2330.TW, 2454.TW, 2317.TW, 2308.TW, 2382.TW, 2303.TW",
     "Dow Jones (top 10)": "AAPL, MSFT, V, UNH, JPM, JNJ, WMT, PG, HD, MA",
     "China Tech (ADR)": "BABA, PDD, JD, BIDU, NTES, TCEHY",
@@ -386,17 +382,20 @@ def fetch_prices(tickers: tuple[str, ...], start: date, end: date) -> pd.DataFra
         return pd.DataFrame()
     if data is None or data.empty:
         return pd.DataFrame()
-    if len(tickers) == 1:
-        col = data["Close"] if "Close" in data.columns else data.get(tickers[0], pd.Series())
-        return pd.DataFrame({tickers[0]: col})
     closes: dict[str, pd.Series] = {}
-    top = data.columns.levels[0] if hasattr(data.columns, "levels") else []
-    for t in tickers:
-        if t in top:
-            try:
-                closes[t] = data[t]["Close"]
-            except Exception:
-                continue
+    if isinstance(data.columns, pd.MultiIndex):
+        # group_by="ticker" yields (ticker, field) columns even for a SINGLE
+        # ticker, so never branch on len(tickers) here (that crashed before).
+        top = set(data.columns.get_level_values(0))
+        for t in tickers:
+            if t in top:
+                try:
+                    closes[t] = data[t]["Close"]
+                except Exception:
+                    continue
+    elif "Close" in data.columns:
+        # Flat columns: some yfinance versions collapse single-ticker frames.
+        closes[tickers[0]] = data["Close"]
     return pd.DataFrame(closes).dropna(how="all")
 
 
@@ -417,7 +416,7 @@ KNOWN_SECTORS = {
     "NET": "Technology", "ORCL": "Technology", "ADBE": "Technology", "SAP": "Technology",
     # EV & Auto
     "F": "Consumer Cyclical", "GM": "Consumer Cyclical", "RIVN": "Consumer Cyclical",
-    "LCID": "Consumer Cyclical", "NIO": "Consumer Cyclical", "BYD": "Consumer Cyclical",
+    "LCID": "Consumer Cyclical", "NIO": "Consumer Cyclical", "BYDDY": "Consumer Cyclical",
     "TM": "Consumer Cyclical",
     # Dow Jones top names
     "V": "Financial Services", "MA": "Financial Services", "JPM": "Financial Services",
@@ -441,7 +440,7 @@ KNOWN_SECTORS = {
 
 
 @st.cache_data(ttl=60 * 60, show_spinner=False)
-def fetch_share_info(tickers: tuple[str, ...]) -> pd.DataFrame:
+def _fetch_share_info_cached(tickers: tuple[str, ...]) -> pd.DataFrame:
     def _fast_get(fast, key):
         """fast_info is dict-like with camelCase keys; tolerate either style."""
         if fast is None:
@@ -466,7 +465,8 @@ def fetch_share_info(tickers: tuple[str, ...]) -> pd.DataFrame:
                     break
             except Exception:
                 info = info or {}
-            time.sleep(0.4 * (attempt + 1))
+            if attempt < 2:               # no point sleeping after the last try
+                time.sleep(0.4 * (attempt + 1))
         # fast_info uses the lightweight quote endpoint — far more reliable
         # under rate-limiting; our guaranteed backstop for shares + market cap.
         try:
@@ -528,27 +528,37 @@ def fetch_share_info(tickers: tuple[str, ...]) -> pd.DataFrame:
     return pd.DataFrame(rows).set_index("Ticker")
 
 
-@st.cache_data(ttl=60 * 60 * 6, show_spinner=False)
-def validate_tickers(tickers: tuple[str, ...]) -> dict[str, str | None]:
-    """Best-effort company-name lookup. Never marks a ticker as invalid just
-    because a metadata call rate-limited — the real source of truth is whether
-    fetch_prices returns data, so we keep this purely informational."""
-    out: dict[str, str | None] = {}
-    for t in tickers:
-        name: str | None = None
-        # Try .info first; if it 404s or comes back empty, the ticker is likely
-        # bogus. Network/rate-limit errors are silently tolerated so the chip
-        # falls back to showing just the ticker symbol.
-        try:
-            info = yf.Ticker(t).info or {}
-            name = info.get("shortName") or info.get("longName")
-            # An explicit Yahoo 404 surfaces as quoteType being None / missing
-            if not name and not info.get("quoteType"):
-                name = None
-        except Exception:
-            name = None
-        out[t] = name
-    return out
+def fetch_share_info(tickers: tuple[str, ...]) -> pd.DataFrame:
+    """Cached share-info fetch that refuses to keep a fully-failed result.
+
+    Without this guard, one transient rate-limit storm produced an all-zero
+    frame that st.cache_data then served for a full hour — silently degrading
+    cap/float weighting to equal-weight with no way to retry.
+    """
+    df = _fetch_share_info_cached(tickers)
+    if len(df) and (df["TotalShares"] <= 0).all() and (df["MarketCap"] <= 0).all():
+        _fetch_share_info_cached.clear()   # drop the poisoned cache entry
+    return df
+
+
+@st.cache_data(ttl=60 * 60, show_spinner=False)
+def fetch_fx_to_usd(currency: str) -> float | None:
+    """USD per 1 unit of `currency` (e.g. TWD → ~0.031). USD itself → 1.0.
+
+    Needed because Yahoo reports marketCap / prices in each listing's local
+    currency; summing TWD caps against USD caps produces nonsense weights.
+    Returns None when the FX quote is unavailable so the caller can warn.
+    """
+    if not currency or currency.upper() == "USD":
+        return 1.0
+    try:
+        fi = yf.Ticker(f"{currency.upper()}USD=X").fast_info
+        px = fi.get("lastPrice") if hasattr(fi, "get") else getattr(fi, "last_price", None)
+        if px and px > 0:
+            return float(px)
+    except Exception:
+        pass
+    return None
 
 
 @st.cache_data(ttl=60 * 15, show_spinner=False)
@@ -583,7 +593,9 @@ def compute_metrics(index_series: pd.Series, benchmark: pd.Series | None, rf: fl
         b_daily = benchmark.pct_change().reindex(daily.index).dropna()
         common = daily.loc[b_daily.index]
         if len(common) > 5 and b_daily.var() > 0:
-            beta = float(np.cov(common, b_daily, ddof=0)[0, 1] / b_daily.var())
+            # Both sample-normalized (ddof=1) — np.cov defaults to ddof=1,
+            # matching pandas .var(); mixing ddof biased beta low by (n-1)/n.
+            beta = float(np.cov(common, b_daily)[0, 1] / b_daily.var())
 
     return {
         "sharpe": sharpe, "sortino": sortino, "calmar": calmar,
@@ -639,27 +651,43 @@ if not run and "loaded" not in st.session_state:
     st.stop()
 st.session_state["loaded"] = True
 
-# Show informational chips, but DON'T filter — fetch_prices is the real
-# source of truth. Yahoo's metadata endpoint rate-limits frequently on
-# Streamlit Cloud and was producing false negatives that dropped every ticker.
-with st.spinner(T["validating"]):
-    valid_map = validate_tickers(tickers)
-_render_chips(valid_map)
-
 with st.spinner(T["loading_prices"]):
     prices = fetch_prices(tickers, start_date, end_date)
 
 missing = [t for t in tickers if t not in prices.columns]
 if missing:
     st.warning(f"{T['missing']}: {', '.join(missing)}")
-prices = prices.dropna(axis=1, how="all").ffill().dropna()
+
+# Row-complete the panel, but remember each column's first trading day so a
+# late-IPO constituent that silently truncates the window can be reported.
+prices = prices.dropna(axis=1, how="all")
+first_valid = {t: prices[t].first_valid_index() for t in prices.columns}
+prices = prices.ffill().dropna()
 
 if prices.empty or prices.shape[1] == 0:
     st.error(T["no_data"])
     st.stop()
 
+actual_start = prices.index[0]
+if (actual_start.date() - start_date).days > 7:
+    limiter = max(
+        (t for t in first_valid if first_valid[t] is not None),
+        key=lambda t: first_valid[t],
+        default=None,
+    )
+    st.warning(T["window_truncated"].format(
+        ticker=limiter or "?", start=actual_start.date(),
+    ))
+
 with st.spinner(T["loading_shares"]):
     share_info = fetch_share_info(tuple(prices.columns))
+
+# Ticker chips — names come from the share_info fetch that runs anyway, so
+# no separate per-ticker .info sweep is needed just for display.
+_render_chips({
+    t: (str(share_info.loc[t, "Name"]) if t in share_info.index else None)
+    for t in prices.columns
+})
 
 # Weights
 def _safe_weights(raw: dict[str, float], cols) -> dict[str, float]:
@@ -672,14 +700,33 @@ def _safe_weights(raw: dict[str, float], cols) -> dict[str, float]:
     return {t: cleaned[t] / total for t in cols}
 
 
+# Cap / float weighting must convert to a common currency first — Yahoo
+# reports each listing in its local currency (2330.TW in TWD, AAPL in USD).
+if weight_mode in ("cap", "float"):
+    currencies = {
+        t: str(share_info.loc[t, "Currency"] or "USD").upper() or "USD"
+        for t in prices.columns
+    }
+    fx = {c: fetch_fx_to_usd(c) for c in set(currencies.values())}
+    fx_missing = sorted({c for c, v in fx.items() if v is None})
+    if fx_missing:
+        st.warning(T["fx_missing"].format(ccys=", ".join(fx_missing)))
+
+    def _fx(t: str) -> float:
+        return fx.get(currencies[t]) or 1.0
+
 if weight_mode == "cap":
-    caps = share_info["MarketCap"].to_dict()
+    caps = {
+        t: float(share_info.loc[t, "MarketCap"] or 0) * _fx(t)
+        for t in prices.columns
+    }
     weights = _safe_weights(caps, prices.columns)
 elif weight_mode == "float":
-    floats = share_info["FloatShares"].to_dict()
     last = prices.iloc[-1]
     ff_cap = {
-        t: (floats.get(t, 0) or 0) * (last[t] if pd.notna(last[t]) else 0)
+        t: float(share_info.loc[t, "FloatShares"] or 0)
+        * (last[t] if pd.notna(last[t]) else 0)
+        * _fx(t)
         for t in prices.columns
     }
     weights = _safe_weights(ff_cap, prices.columns)
@@ -688,11 +735,17 @@ elif weight_mode == "custom":
     st.markdown(f"### {T['weight_custom']}")
     st.caption(T["custom_weight_help"])
     default_w = 100.0 / prices.shape[1]
+    # Apply a pending normalization BEFORE the widgets are instantiated —
+    # writing a widget's session key after st.number_input(key=...) has run
+    # this rerun raises StreamlitAPIException.
+    pending = st.session_state.pop("cw_pending", None)
     custom = {}
     cols = st.columns(min(4, prices.shape[1]))
     for i, t in enumerate(prices.columns):
         key = f"cw_{t}"
-        if key not in st.session_state:
+        if pending and t in pending:
+            st.session_state[key] = pending[t]
+        elif key not in st.session_state:
             st.session_state[key] = round(default_w, 2)
         with cols[i % len(cols)]:
             custom[t] = st.number_input(
@@ -702,8 +755,9 @@ elif weight_mode == "custom":
     cnorm_col1, cnorm_col2 = st.columns([1, 3])
     if cnorm_col1.button(T["normalize_btn"]):
         if csum > 0:
-            for t in custom:
-                st.session_state[f"cw_{t}"] = round(custom[t] / csum * 100, 2)
+            st.session_state["cw_pending"] = {
+                t: round(custom[t] / csum * 100, 2) for t in custom
+            }
             st.rerun()
     cnorm_col2.markdown(
         f"<div style='color:{MUTED}; padding-top:8px;'>{T['current_sum']}: "
@@ -924,7 +978,9 @@ total_float = share_info["FloatShares"].sum()
 shares_table.loc[T["total_row"]] = [
     "—", "—", "—",
     fmt_big(total_cap), fmt_big(total_shares_sum), fmt_big(total_float),
-    f"{(total_float / total_shares_sum * 100):.2f}" if total_shares_sum else "0",
+    # Same min(100, ...) clamp as the per-row FloatPct — otherwise a dual-class
+    # name can make every row show ≤100% while the TOTAL prints >100%.
+    f"{min(100.0, total_float / total_shares_sum * 100):.2f}" if total_shares_sum else "0",
 ]
 st.dataframe(shares_table, use_container_width=True)
 
