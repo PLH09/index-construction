@@ -30,6 +30,7 @@ TEXTS = {
         "weight_equal": "等權重",
         "weight_cap": "市值加權",
         "weight_float": "自由流通市值",
+        "weight_price": "價格加權",
         "period": "期間",
         "preset": "快速選擇",
         "presets": ["自訂", "1 個月", "3 個月", "6 個月", "年初至今", "1 年", "3 年", "5 年"],
@@ -128,6 +129,7 @@ TEXTS = {
         "weight_equal": "Equal weight",
         "weight_cap": "Market cap",
         "weight_float": "Free float",
+        "weight_price": "Price-weighted",
         "period": "Period",
         "preset": "Quick select",
         "presets": ["Custom", "1 Month", "3 Months", "6 Months", "YTD", "1 Year", "3 Years", "5 Years"],
@@ -326,6 +328,7 @@ with st.sidebar:
         T["weight_equal"]: "equal",
         T["weight_cap"]: "cap",
         T["weight_float"]: "float",
+        T["weight_price"]: "price",
         T["weight_custom"]: "custom",
     }
     weight_choice = st.radio(T["weight"], list(weight_label_map.keys()), index=0)
@@ -700,9 +703,9 @@ def _safe_weights(raw: dict[str, float], cols) -> dict[str, float]:
     return {t: cleaned[t] / total for t in cols}
 
 
-# Cap / float weighting must convert to a common currency first — Yahoo
-# reports each listing in its local currency (2330.TW in TWD, AAPL in USD).
-if weight_mode in ("cap", "float"):
+# Cap / float / price weighting must convert to a common currency first —
+# Yahoo reports each listing in its local currency (2330.TW in TWD, AAPL USD).
+if weight_mode in ("cap", "float", "price"):
     currencies = {
         t: str(share_info.loc[t, "Currency"] or "USD").upper() or "USD"
         for t in prices.columns
@@ -730,6 +733,19 @@ elif weight_mode == "float":
         for t in prices.columns
     }
     weights = _safe_weights(ff_cap, prices.columns)
+elif weight_mode == "price":
+    # Price-weighted (Dow Jones / Nikkei 225 style): the index holds ONE
+    # share of each constituent, so weight ∝ share price. Using the FIRST
+    # in-window price makes build_index()'s normalized-return sum exactly
+    # reproduce Σ(price_t) / Σ(price_0) — a true price-weighted index level.
+    # Split-adjustment is already handled by yfinance auto_adjust, so no
+    # manual divisor is needed. FX-converted for cross-currency baskets.
+    first = prices.iloc[0]
+    px_w = {
+        t: (first[t] if pd.notna(first[t]) else 0) * _fx(t)
+        for t in prices.columns
+    }
+    weights = _safe_weights(px_w, prices.columns)
 elif weight_mode == "custom":
     # Render sliders inline. Default to equal weight per ticker.
     st.markdown(f"### {T['weight_custom']}")

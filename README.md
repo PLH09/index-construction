@@ -23,7 +23,7 @@ Pick any set of tickers, choose a weighting scheme, and instantly see index perf
 ## Features
 
 - **Custom universe**: any Yahoo Finance ticker (US, TW, HK, etc. — e.g. `AAPL`, `2330.TW`), plus 8 curated preset baskets
-- **Four weighting modes**: equal-weight, market-cap, free-float market-cap, and custom sliders
+- **Five weighting modes**: equal-weight, market-cap, free-float market-cap, price-weighted (Dow/Nikkei style), and custom sliders — all FX-normalized for cross-currency baskets
 - **Flexible periods**: 1M / 3M / 6M / YTD / 1Y / 3Y / 5Y presets or custom dates
 - **Benchmark comparison**: overlay S&P 500 / NASDAQ / Dow / Russell 2000 / MSCI World / TAIEX
 - **Risk metrics**: Sharpe, Sortino, Calmar, Beta, annualized return / volatility, max drawdown (with adjustable risk-free rate)
